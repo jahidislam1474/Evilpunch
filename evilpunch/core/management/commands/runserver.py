@@ -13,6 +13,22 @@ ANSI_RESET = "\033[0m"
 class Command(BaseRunserverCommand):
     help = "Runs the server with a customized startup banner."
 
+    def handle(self, *args, **options):
+        # If no addr:port provided explicitly, default to config values
+        try:
+            addrport = options.get("addrport")
+            if not addrport:
+                from core.config import get_config  # type: ignore
+                cfg = get_config()
+                host = str(cfg.get("dashboard_host") or "127.0.0.1")
+                port = str(cfg.get("dashboard_port") or "8000")
+                options["addrport"] = f"{host}:{port}"
+        except Exception:
+            # Fall back to Django defaults if config is unavailable
+            pass
+
+        return super().handle(*args, **options)
+
     def inner_run(self, *args, **options):
         # Suppress Django's default banner lines and show our own
         original_write = self.stdout.write

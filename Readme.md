@@ -2,9 +2,26 @@
   <img src="evilpunch/public/static/images/evilpunch.png" alt="EvilPunch Logo" width="180" />
 </p>
 
-### EvilPunch Reverse Proxy
+### EvilPunch — Offensive Reverse Proxy
 
-EvilPunch is a reverse proxy framework intended for authorized red teaming, adversary emulation, and educational security research. Use it responsibly and legally.
+<p align="center">
+  <a href="https://www.djangoproject.com/" target="_blank"><img alt="Built with Django" src="https://img.shields.io/badge/built%20with-Django-0C4B33?logo=django&logoColor=white"></a>
+  <a href="https://python.org" target="_blank"><img alt="Python" src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://youtu.be/N5iu_X73hy0" target="_blank"><img alt="Demo" src="https://img.shields.io/badge/watch-demo-FF0000?logo=youtube&logoColor=white"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-active-success">
+  
+</p>
+
+<p align="center"><i>Fast, configurable reverse proxy dashboard for authorized red teaming and security research.</i></p>
+
+## Table of Contents
+
+- [Demo](#demo)
+- [Features](#features)
+- [Run the Dashboard](#run-the-dashboard)
+- [Community & Resources](#community--resources)
+- [Legal & Ethical Notice](#legal--ethical-notice)
+- [License & Permissions](#license--permissions)
 
 ## Demo
 
@@ -13,9 +30,69 @@ EvilPunch is a reverse proxy framework intended for authorized red teaming, adve
 <a href="https://youtu.be/N5iu_X73hy0" target="_blank">
   <img src="https://img.youtube.com/vi/N5iu_X73hy0/hqdefault.jpg" alt="EvilPunch Demo Video" width="640" />
   
-</a>
+ </a>
 
-## Help Center
+## Features
+
+- **Web dashboard**: Admin login ensured from `config.json`.
+- **Config-driven**: Set host, port, and credentials in `evilpunch/config/config.json`.
+- **One-liner start**: `./run.sh` handles env, deps, migrate, and run.
+- **Django 5**: Modern framework, SQLite by default, easy to extend.
+- **Static assets**: Bundled images and styles via `public/static`.
+## Run the Dashboard
+
+### Quick start (one command)
+
+```bash
+chmod +x run.sh && ./run.sh
+```
+
+This will:
+
+- Install Python (if missing) and tools for your OS
+- Create/activate a virtual environment
+- Install dependencies from `requirements.txt`
+- Run database migrations
+- Start the Django server using the configured host/port
+
+### Manual setup
+
+```bash
+# 1) Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# 2) Install dependencies
+pip install -r requirements.txt
+
+# 3) Run migrations and start the server
+cd evilpunch
+python manage.py migrate
+python manage.py runserver
+```
+
+### Configure host, port, and admin login
+
+- Edit `evilpunch/config/config.json`:
+  - `dashboard_host` (default `0.0.0.0`) and `dashboard_port` (default `9000`)
+  - `dashboard_username` and `dashboard_password`
+- On startup, these credentials are ensured for an admin user.
+- To use a different config path, set `REVERSE_PROXY_CONFIG_PATH` or `CONFIG_PATH`.
+
+### Access the dashboard
+
+- Local: `http://localhost:9000`
+- Remote/LAN: `http://<server-ip-or-hostname>:9000` (open the port in your firewall)
+- Log in with the credentials from `config.json` (default `admin` / `admin`). Change them immediately.
+
+### Notes
+
+- The development server binds to the host/port from `evilpunch/config/config.json`.
+- If exposing beyond localhost, set `ALLOWED_HOSTS` in `evilpunch/evilpunch/settings.py` for production use.
+
+
+
+## Community & Resources
 
 Everything you need to get the most from EvilPunch — tutorials, docs, tools, courses, and community — all in one place.
 
