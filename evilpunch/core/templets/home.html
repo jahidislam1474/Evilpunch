@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard · EvilPunch{% endblock %}
+{% block content %}
+<div class="row g-4">
+  <div class="col-12">
+    <div class="card card-dark shadow-sm">
+      <div class="card-body">
+        <h1 class="h4 mb-1">Dashboard</h1>
+        <p class="text-secondary mb-0">You are logged in as <strong>{{ request.user.username }}</strong>.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Session Statistics -->
+  <div class="col-md-4">
+    <div class="card card-dark h-100">
+      <div class="card-body text-center">
+        <h2 class="h6 mb-3">Total Sessions</h2>
+        <div class="display-6 text-primary mb-2">{{ total_sessions }}</div>
+        <div class="text-secondary">All visitor sessions</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card card-dark h-100">
+      <div class="card-body text-center">
+        <h2 class="h6 mb-3">Captured Sessions</h2>
+        <div class="display-6 text-success mb-2">{{ captured_sessions }}</div>
+        <div class="text-secondary">Sessions with data</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card card-dark h-100">
+      <div class="card-body text-center">
+        <h2 class="h6 mb-3">With Credentials</h2>
+        <div class="display-6 text-warning mb-2">{{ sessions_with_credentials }}</div>
+        <div class="text-secondary">Login data captured</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent Captured Sessions -->
+  <div class="col-12">
+    <div class="card card-dark">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Recent Captured Sessions</h2>
+        <a href="{% url 'sessions' %}" class="btn btn-outline-light btn-sm">View All</a>
+      </div>
+      <div class="card-body">
+        {% if recent_captured_sessions %}
+        <div class="table-responsive">
+          <table class="table table-dark table-sm">
+            <thead>
+              <tr>
+                <th>Session ID</th>
+                <th>Phishlet</th>
+                <th>Domain</th>
+                <th>IP Address</th>
+                <th>Credentials</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for session in recent_captured_sessions %}
+              <tr>
+                <td><code>{{ session.get_short_session_id }}</code></td>
+                <td><span class="badge bg-info">{{ session.phishlet.name }}</span></td>
+                <td>{{ session.proxy_domain }}</td>
+                <td><code>{{ session.visitor_ip }}</code></td>
+                <td>
+                  {% if session.captured_username or session.captured_password %}
+                  <span class="badge bg-success">
+                    <i class="fas fa-key"></i> Captured
+                  </span>
+                  {% else %}
+                  <span class="badge bg-secondary">Other Data</span>
+                  {% endif %}
+                </td>
+                <td><small>{{ session.created|date:"M d, H:i" }}</small></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="fas fa-inbox fa-2x mb-2"></i>
+          <br>No captured sessions yet.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card card-dark h-100">
+      <div class="card-body">
+        <h2 class="h6">Quick actions</h2>
+        <div class="d-flex gap-2 flex-wrap">
+          <a class="btn btn-outline-light btn-sm" href="{% url 'phishlet_list' %}">Manage Phishlets</a>
+          <a class="btn btn-outline-light btn-sm" href="{% url 'sessions' %}">View Sessions</a>
+          <a class="btn btn-outline-light btn-sm" href="{% url 'logout' %}">Logout</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

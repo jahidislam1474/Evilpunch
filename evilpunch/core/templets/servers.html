@@ -1,0 +1,225 @@
+{% extends 'base.html' %}
+{% block title %}Servers · EvilPunch{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">Servers</h1>
+</div>
+
+<!-- Tab Navigation -->
+<ul class="nav nav-tabs mb-4" id="serversTab" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-content" type="button" role="tab" aria-controls="proxy-content" aria-selected="true">
+      <i class="fas fa-server me-2"></i>Proxy Server
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="dns-tab" data-bs-toggle="tab" data-bs-target="#dns-content" type="button" role="tab" aria-controls="dns-content" aria-selected="false">
+      <i class="fas fa-network-wired me-2"></i>DNS Server
+    </button>
+  </li>
+</ul>
+
+<!-- Tab Content -->
+<div class="tab-content" id="serversTabContent">
+  <!-- Proxy Server Tab -->
+  <div class="tab-pane fade show active" id="proxy-content" role="tabpanel" aria-labelledby="proxy-tab">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="h5 mb-0">Proxy Server</h2>
+      <div>
+        <span id="proxy-status" class="badge text-bg-secondary">Loading...</span>
+      </div>
+    </div>
+
+    <div class="card card-dark">
+      <div class="card-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-auto">
+            <label class="form-label">Port</label>
+            <input type="number" class="form-control" id="proxy-port" value="443" min="1" max="65535" />
+            <div class="form-text text-secondary">Falls back to HTTP on high ports if TLS certs are missing.</div>
+          </div>
+          <div class="col-auto">
+            <button id="btn-proxy-start" class="btn btn-success">Start</button>
+          </div>
+          <div class="col-auto">
+            <button id="btn-proxy-stop" class="btn btn-danger">Stop</button>
+          </div>
+          <div class="col-auto">
+            <button id="btn-proxy-restart" class="btn btn-warning">Restart</button>
+          </div>
+        </div>
+        <hr/>
+        <pre id="proxy-log" class="mt-3 text-secondary" style="white-space: pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- DNS Server Tab -->
+  <div class="tab-pane fade" id="dns-content" role="tabpanel" aria-labelledby="dns-tab">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="h5 mb-0">DNS Server</h2>
+      <div>
+        <span id="dns-status" class="badge text-bg-secondary">Loading...</span>
+      </div>
+    </div>
+
+    <div class="card card-dark">
+      <div class="card-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-auto">
+            <label class="form-label">Port</label>
+            <input type="number" class="form-control" id="dns-port" value="{{ settings.dns_port }}" min="1" max="65535" />
+            <div class="form-text text-secondary">Configured via settings. Changes require restart.</div>
+          </div>
+          <div class="col-auto">
+            <button id="btn-dns-start" class="btn btn-success">Start</button>
+          </div>
+          <div class="col-auto">
+            <button id="btn-dns-stop" class="btn btn-danger">Stop</button>
+          </div>
+          <div class="col-auto">
+            <button id="btn-dns-restart" class="btn btn-warning">Restart</button>
+          </div>
+        </div>
+        <hr/>
+        <pre id="dns-log" class="mt-3 text-secondary" style="white-space: pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // Proxy Server functionality
+  const proxyStatusEl = document.getElementById('proxy-status');
+  const proxyLogEl = document.getElementById('proxy-log');
+  const proxyPortEl = document.getElementById('proxy-port');
+
+  const getCookie = (name) => {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  };
+  const csrfToken = getCookie('csrftoken');
+
+  const setProxyStatus = (st) => {
+    proxyStatusEl.classList.remove('text-bg-success', 'text-bg-danger', 'text-bg-secondary');
+    if (st.running) {
+      proxyStatusEl.classList.add('text-bg-success');
+      proxyStatusEl.textContent = `Running (${st.scheme}) on port ${st.port}`;
+    } else {
+      proxyStatusEl.classList.add('text-bg-danger');
+      proxyStatusEl.textContent = 'Stopped';
+    }
+  };
+
+  const refreshProxyStatus = async () => {
+    const res = await fetch('{% url "proxy_status" %}');
+    const data = await res.json();
+    setProxyStatus(data);
+  };
+
+  const callProxy = async (url, body) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken,
+      },
+      body: body ? JSON.stringify(body) : '{}',
+    });
+    const data = await res.json();
+    if (data.error) proxyLogEl.textContent = `[error] ${data.error}`;
+    await refreshProxyStatus();
+  };
+
+  document.getElementById('btn-proxy-start').addEventListener('click', async () => {
+    await callProxy('{% url "proxy_start" %}', {
+      port: parseInt(proxyPortEl.value || '443', 10),
+    });
+  });
+
+  document.getElementById('btn-proxy-stop').addEventListener('click', async () => {
+    await callProxy('{% url "proxy_stop" %}');
+  });
+
+  document.getElementById('btn-proxy-restart').addEventListener('click', async () => {
+    await callProxy('{% url "proxy_restart" %}', {
+      port: parseInt(proxyPortEl.value || '443', 10),
+    });
+  });
+
+  // DNS Server functionality
+  const dnsStatusEl = document.getElementById('dns-status');
+  const dnsLogEl = document.getElementById('dns-log');
+  const dnsPortEl = document.getElementById('dns-port');
+
+  const setDnsStatus = (st) => {
+    dnsStatusEl.classList.remove('text-bg-success', 'text-bg-danger', 'text-bg-secondary');
+    if (st.running) {
+      dnsStatusEl.classList.add('text-bg-success');
+      dnsStatusEl.textContent = `Running on port ${st.port}`;
+    } else {
+      dnsStatusEl.classList.add('text-bg-danger');
+      dnsStatusEl.textContent = 'Stopped';
+    }
+  };
+
+  const refreshDnsStatus = async () => {
+    const res = await fetch('{% url "dns_status" %}');
+    const data = await res.json();
+    setDnsStatus(data);
+  };
+
+  const callDns = async (url) => {
+    const res = await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrfToken } });
+    const data = await res.json();
+    if (data.error) dnsLogEl.textContent = `[error] ${data.error}`;
+    await refreshDnsStatus();
+  };
+
+  document.getElementById('btn-dns-start').addEventListener('click', async () => {
+    // If port changed, persist and then start
+    const newPort = parseInt(dnsPortEl.value || '53', 10);
+    if (newPort !== {{ settings.dns_port }}) {
+      await fetch('{% url "dns_server" %}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({ dns_port: newPort })
+      });
+    }
+    await callDns('{% url "dns_start" %}');
+  });
+
+  document.getElementById('btn-dns-stop').addEventListener('click', async () => {
+    await callDns('{% url "dns_stop" %}');
+  });
+
+  document.getElementById('btn-dns-restart').addEventListener('click', async () => {
+    const newPort = parseInt(dnsPortEl.value || '53', 10);
+    if (newPort !== {{ settings.dns_port }}) {
+      await fetch('{% url "dns_server" %}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({ dns_port: newPort })
+      });
+    }
+    await callDns('{% url "dns_restart" %}');
+  });
+
+  // Initialize status for both servers
+  refreshProxyStatus();
+  refreshDnsStatus();
+
+  // Refresh status when switching tabs to ensure up-to-date information
+  document.getElementById('serversTab').addEventListener('shown.bs.tab', (event) => {
+    if (event.target.id === 'proxy-tab') {
+      refreshProxyStatus();
+    } else if (event.target.id === 'dns-tab') {
+      refreshDnsStatus();
+    }
+  });
+});
+</script>
+{% endblock %}

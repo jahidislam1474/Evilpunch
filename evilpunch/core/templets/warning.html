@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block title %}Legal & Ethical Use · EvilPunch{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-10 col-xl-9">
+    <div class="card card-dark shadow-sm">
+      <div class="card-body p-4 p-md-5">
+        <div class="d-flex align-items-center mb-3">
+          <i class="fas fa-exclamation-triangle text-warning me-2"></i>
+          <h1 class="h4 mb-0">Important Legal & Ethical Notice</h1>
+        </div>
+
+        <p class="text-secondary">This project, including all associated modules, scripts, and user interfaces, is provided strictly for legitimate security testing and educational purposes by authorized professionals. Unauthorized use may be illegal and could lead to criminal and civil penalties.</p>
+
+        <div class="alert alert-warning">
+          <strong>Phishing is illegal without explicit permission.</strong> You must have a written authorization (e.g., contract, letter of engagement, or signed scope) from the system owner before performing any testing.
+        </div>
+
+        <h2 class="h6 mt-4">Intended Audience</h2>
+        <ul class="mb-3">
+          <li>Red teamers and penetration testers working under a valid Statement of Work.</li>
+          <li>Blue teamers and defenders conducting adversary emulation in controlled environments.</li>
+          <li>Security researchers and educators in lab settings with consent.</li>
+        </ul>
+
+        <h2 class="h6 mt-4">You Agree To</h2>
+        <ul class="mb-3">
+          <li>Use this tool only with explicit, written authorization from asset owners.</li>
+          <li>Comply with all applicable laws and regulations in your jurisdiction.</li>
+          <li>Protect captured data and handle it according to your engagement’s confidentiality rules.</li>
+          <li>Avoid targeting uninvolved third parties or production environments without scope approval.</li>
+        </ul>
+
+        <h2 class="h6 mt-4">Data Handling</h2>
+        <ul class="mb-3">
+          <li>Minimize data collection to what is necessary for the engagement.</li>
+          <li>Store sensitive data securely and encrypt it at rest and in transit when possible.</li>
+          <li>Purge data promptly at the end of an engagement or per contractual obligations.</li>
+        </ul>
+
+        <h2 class="h6 mt-4">Disclaimer</h2>
+        <p class="text-secondary">The authors and contributors are not responsible for any misuse or damage caused by this software. Using this project implies that you understand and accept these terms and will use it responsibly and lawfully.</p>
+
+        <div class="mt-4 d-flex gap-2">
+          <a href="{% url 'dashboard' %}" class="btn btn-primary"><i class="fas fa-arrow-left me-2"></i>Back to Dashboard</a>
+          <a href="https://www.sans.org/blog/what-is-a-red-team/" target="_blank" rel="noopener" class="btn btn-outline-light"><i class="fas fa-book me-2"></i>Learn about Red Teaming</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+

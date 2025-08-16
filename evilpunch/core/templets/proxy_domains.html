@@ -1,0 +1,495 @@
+{% extends 'base.html' %}
+{% block title %}Proxy Domains · EvilPunch{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">Proxy Domains</h1>
+  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalAdd">Add Domain</button>
+</div>
+
+<div class="card card-dark">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Hostname</th>
+            <th>Status</th>
+            <th>Certificate</th>
+            <th class="text-end">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in items %}
+          <tr data-id="{{ d.id }}">
+            <td>{{ d.hostname }}</td>
+            <td>
+              {% if d.is_active %}
+              <span class="badge text-bg-success">Active</span>
+              {% else %}
+              <span class="badge text-bg-secondary">Inactive</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if d.certificate %}
+                <span class="badge text-bg-info">Present</span>
+              {% else %}
+                <span class="badge text-bg-warning">Missing</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              <div class="btn-group">
+                <button class="btn btn-sm btn-outline-light btn-toggle" {% if not d.certificate and not d.is_active %}disabled title="Add certificates first"{% endif %}>{% if d.is_active %}Deactivate{% else %}Activate{% endif %}</button>
+                <button class="btn btn-sm btn-outline-light" data-bs-toggle="modal" data-bs-target="#modalCert" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Add Certs</button>
+                <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalGenerateSSL" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Generate SSL</button>
+                <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#modalLetsEncrypt" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Let's Encrypt SSL</button>
+                <a class="btn btn-sm btn-outline-light" href="{% url 'proxy_domain_cert_get' d.id %}">Download Certs</a>
+              </div>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="4" class="text-center text-secondary">No domains yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  </div>
+
+<!-- Add Domain Modal -->
+<div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content card-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Add Domain</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{% url 'proxy_domain_add' %}">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Hostname</label>
+            <input type="text" class="form-control" name="hostname" placeholder="example.com or sub.example.com" required />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Replace Certificate Modal -->
+<div class="modal fade" id="modalCert" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content card-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Add Certificates</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" id="cert-form">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-2 text-secondary" id="cert-domain"></div>
+          <div class="mb-3" id="cert-status" style="display: none;">
+            <div class="alert alert-info">
+              <i class="fas fa-info-circle me-2"></i>
+              <span id="cert-status-text">Loading certificate data...</span>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Certificate (PEM)</label>
+            <textarea class="form-control" name="cert_pem" rows="6" required></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Private Key (PEM)</label>
+            <textarea class="form-control" name="key_pem" rows="6" required></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Generate Self-Signed SSL Modal -->
+<div class="modal fade" id="modalGenerateSSL" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content card-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Generate Self-Signed SSL Certificate</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" id="generate-ssl-form">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-2 text-secondary" id="ssl-domain"></div>
+          
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            This will generate a wildcard self-signed SSL certificate for <strong id="ssl-domain-name"></strong> and all its subdomains.
+          </div>
+          
+          <div class="row">
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">Country (2-letter code)</label>
+                <input type="text" class="form-control" name="country" value="US" maxlength="2" required />
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">State/Province</label>
+                <input type="text" class="form-control" name="state" value="California" required />
+              </div>
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">City</label>
+                <input type="text" class="form-control" name="city" value="San Francisco" required />
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">Organization</label>
+                <input type="text" class="form-control" name="organization" value="EvilPunch" required />
+              </div>
+            </div>
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Common Name (Domain)</label>
+            <input type="text" class="form-control" name="common_name" id="ssl-common-name" readonly />
+            <div class="form-text">This will be automatically set to the domain</div>
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Validity (Days)</label>
+            <input type="number" class="form-control" name="validity_days" value="365" min="1" max="3650" required />
+            <div class="form-text">Certificate will be valid for this many days (max 10 years)</div>
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Key Size</label>
+            <select class="form-select" name="key_size">
+              <option value="2048">2048 bits (Recommended)</option>
+              <option value="4096">4096 bits (Higher security)</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success">
+            <i class="fas fa-key me-2"></i>Generate Certificate
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Let's Encrypt SSL Modal -->
+<div class="modal fade" id="modalLetsEncrypt" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content card-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">Request Let's Encrypt Wildcard SSL Certificate</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" id="letsencrypt-form">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-2 text-secondary" id="le-domain"></div>
+          
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            This will request a wildcard SSL certificate from Let's Encrypt for <strong id="le-domain-name"></strong> and all its subdomains.
+          </div>
+          
+          <div class="alert alert-success">
+            <i class="fas fa-check-circle me-2"></i>
+            <strong>Python-based:</strong> Uses Python ACME library - no external system dependencies required!
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Email Address</label>
+            <input type="email" class="form-control" name="email" placeholder="your-email@example.com" required />
+            <div class="form-text">Required for Let's Encrypt account and notifications</div>
+          </div>
+          
+          <div class="mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="staging" id="staging-check" value="true">
+              <label class="form-check-label" for="staging-check">
+                Use staging environment (recommended for testing)
+              </label>
+              <div class="form-text">Staging environment has higher rate limits and won't count against production limits</div>
+            </div>
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Domain</label>
+            <input type="text" class="form-control" name="domain" id="le-common-name" readonly />
+            <div class="form-text">This will be automatically set to the domain</div>
+          </div>
+          
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>Benefits:</strong> Free, trusted by browsers, automatic renewal, 90-day validity
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-info">
+            <i class="fas fa-globe me-2"></i>Request Certificate
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const getCookie = (name) => {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  };
+  const csrfToken = getCookie('csrftoken');
+
+  // Toggle active
+  document.querySelectorAll('.btn-toggle').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const tr = e.target.closest('tr');
+      const id = tr.dataset.id;
+      const res = await fetch(`/proxy-domains/${id}/toggle/`, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+      });
+      const data = await res.json();
+      if (data.ok) {
+        window.location.reload();
+      }
+    });
+  });
+
+  // Prepare cert modal
+  const modalEl = document.getElementById('modalCert');
+  modalEl.addEventListener('show.bs.modal', async (ev) => {
+    const button = ev.relatedTarget;
+    const id = button.getAttribute('data-id');
+    const host = button.getAttribute('data-host');
+    document.getElementById('cert-domain').textContent = host;
+    const form = document.getElementById('cert-form');
+    form.action = `/proxy-domains/${id}/cert/add/`;
+    
+    // Show loading status
+    const statusDiv = document.getElementById('cert-status');
+    const statusText = document.getElementById('cert-status-text');
+    statusDiv.style.display = 'block';
+    statusText.textContent = 'Loading certificate data...';
+    
+    // Fetch existing certificate data if available
+    try {
+      const response = await fetch(`/proxy-domains/${id}/cert/add/`, {
+        method: 'GET',
+        headers: { 'X-CSRFToken': csrfToken },
+      });
+      
+      if (response.ok) {
+        const certData = await response.json();
+        if (certData.exists) {
+          // Populate form with existing certificate data
+          form.querySelector('textarea[name="cert_pem"]').value = certData.cert_pem;
+          form.querySelector('textarea[name="key_pem"]').value = certData.key_pem;
+          
+          // Update modal title to indicate editing
+          document.querySelector('#modalCert .modal-title').textContent = 'Edit Certificates';
+          
+          // Show status for existing certificate
+          statusText.textContent = 'Existing certificate found. You can edit the current values.';
+        } else {
+          // Clear form for new certificate
+          form.querySelector('textarea[name="cert_pem"]').value = '';
+          form.querySelector('textarea[name="key_pem"]').value = '';
+          
+          // Update modal title to indicate adding
+          document.querySelector('#modalCert .modal-title').textContent = 'Add Certificates';
+          
+          // Show status for new certificate
+          statusText.textContent = 'No existing certificate found. Please enter new certificate data.';
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching certificate data:', error);
+      // Clear form on error
+      form.querySelector('textarea[name="cert_pem"]').value = '';
+      form.querySelector('textarea[name="key_pem"]').value = '';
+      
+      // Show error status
+      statusText.textContent = 'Error loading certificate data. Please try again.';
+    }
+  });
+
+  // Reset cert modal when hidden
+  modalEl.addEventListener('hidden.bs.modal', () => {
+    const form = document.getElementById('cert-form');
+    form.querySelector('textarea[name="cert_pem"]').value = '';
+    form.querySelector('textarea[name="key_pem"]').value = '';
+    document.querySelector('#modalCert .modal-title').textContent = 'Add Certificates';
+    
+    // Hide status indicator
+    document.getElementById('cert-status').style.display = 'none';
+  });
+
+  // Prepare SSL generation modal
+  const sslModalEl = document.getElementById('modalGenerateSSL');
+  sslModalEl.addEventListener('show.bs.modal', (ev) => {
+    const button = ev.relatedTarget;
+    const id = button.getAttribute('data-id');
+    const host = button.getAttribute('data-host');
+    document.getElementById('ssl-domain').textContent = `Domain: ${host}`;
+    document.getElementById('ssl-domain-name').textContent = host;
+    document.getElementById('ssl-common-name').value = host;
+    
+    const form = document.getElementById('generate-ssl-form');
+    form.action = `/proxy-domains/${id}/generate-ssl/`;
+  });
+
+  // Prepare Let's Encrypt modal
+  const leModalEl = document.getElementById('modalLetsEncrypt');
+  leModalEl.addEventListener('show.bs.modal', (ev) => {
+    const button = ev.relatedTarget;
+    const id = button.getAttribute('data-id');
+    const host = button.getAttribute('data-host');
+    document.getElementById('le-domain').textContent = `Domain: ${host}`;
+    document.getElementById('le-domain-name').textContent = host;
+    document.getElementById('le-common-name').value = host;
+    
+    const form = document.getElementById('letsencrypt-form');
+    form.action = `/proxy-domains/${id}/letsencrypt-ssl/`;
+  });
+
+  // Handle SSL generation form submission
+  document.getElementById('generate-ssl-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const form = e.target;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    
+    // Show loading state
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
+    
+    try {
+      const formData = new FormData(form);
+      const response = await fetch(form.action, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrfToken,
+        },
+        body: formData
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        // Show success message
+        showAlert('SSL certificate generated successfully!', 'success');
+        // Close modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('modalGenerateSSL'));
+        modal.hide();
+        // Reload page to show updated certificate status
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        showAlert(`Error: ${result.error || 'Failed to generate certificate'}`, 'danger');
+      }
+    } catch (error) {
+      console.error('Error generating SSL:', error);
+      showAlert('Error: Failed to generate SSL certificate', 'danger');
+    } finally {
+      // Reset button state
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
+  });
+
+  // Handle Let's Encrypt form submission
+  document.getElementById('letsencrypt-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const form = e.target;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    
+    // Show loading state
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Requesting...';
+    
+    try {
+      const formData = new FormData(form);
+      const response = await fetch(form.action, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrfToken,
+        },
+        body: formData
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        // Show success message
+        showAlert('Let\'s Encrypt certificate requested successfully!', 'success');
+        // Close modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('modalLetsEncrypt'));
+        modal.hide();
+        // Reload page to show updated certificate status
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        showAlert(`Error: ${result.error || 'Failed to request certificate'}`, 'danger');
+      }
+    } catch (error) {
+      console.error('Error requesting Let\'s Encrypt certificate:', error);
+      showAlert('Error: Failed to request Let\'s Encrypt certificate', 'danger');
+    } finally {
+      // Reset button state
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
+  });
+});
+
+// Helper function to show alerts
+function showAlert(message, type = 'info') {
+  const alertDiv = document.createElement('div');
+  alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+  alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+  alertDiv.innerHTML = `
+    ${message}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  `;
+  
+  document.body.appendChild(alertDiv);
+  
+  // Auto-remove after 5 seconds
+  setTimeout(() => {
+    if (alertDiv.parentNode) {
+      alertDiv.remove();
+    }
+  }, 5000);
+}
+</script>
+{% endblock %}
+
+

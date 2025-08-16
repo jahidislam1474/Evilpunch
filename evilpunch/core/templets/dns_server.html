@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+{% block title %}DNS Server · EvilPunch{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">DNS Server</h1>
+  <div>
+    <span id="dns-status" class="badge text-bg-secondary">Loading...</span>
+  </div>
+  </div>
+
+<div class="card card-dark">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-auto">
+        <label class="form-label">Port</label>
+        <input type="number" class="form-control" id="dns-port" value="{{ settings.dns_port }}" min="1" max="65535" />
+        <div class="form-text text-secondary">Configured via settings. Changes require restart.</div>
+      </div>
+      <div class="col-auto">
+        <button id="btn-start" class="btn btn-success">Start</button>
+      </div>
+      <div class="col-auto">
+        <button id="btn-stop" class="btn btn-danger">Stop</button>
+      </div>
+      <div class="col-auto">
+        <button id="btn-restart" class="btn btn-warning">Restart</button>
+      </div>
+    </div>
+    <hr/>
+    <pre id="dns-log" class="mt-3 text-secondary" style="white-space: pre-wrap;"></pre>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const statusEl = document.getElementById('dns-status');
+  const logEl = document.getElementById('dns-log');
+  const portEl = document.getElementById('dns-port');
+  const getCookie = (name) => {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+  };
+  const csrfToken = getCookie('csrftoken');
+
+  const setStatus = (st) => {
+    statusEl.classList.remove('text-bg-success', 'text-bg-danger', 'text-bg-secondary');
+    if (st.running) {
+      statusEl.classList.add('text-bg-success');
+      statusEl.textContent = `Running on port ${st.port}`;
+    } else {
+      statusEl.classList.add('text-bg-danger');
+      statusEl.textContent = 'Stopped';
+    }
+  };
+
+  const refreshStatus = async () => {
+    const res = await fetch('{% url "dns_status" %}');
+    const data = await res.json();
+    setStatus(data);
+  };
+
+  const call = async (url) => {
+    const res = await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrfToken } });
+    const data = await res.json();
+    if (data.error) logEl.textContent = `[error] ${data.error}`;
+    await refreshStatus();
+  };
+
+  document.getElementById('btn-start').addEventListener('click', async () => {
+    // If port changed, persist and then start
+    const newPort = parseInt(portEl.value || '53', 10);
+    if (newPort !== {{ settings.dns_port }}) {
+      await fetch(window.location.href, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({ dns_port: newPort })
+      });
+    }
+    await call('{% url "dns_start" %}');
+  });
+
+  document.getElementById('btn-stop').addEventListener('click', async () => {
+    await call('{% url "dns_stop" %}');
+  });
+
+  document.getElementById('btn-restart').addEventListener('click', async () => {
+    const newPort = parseInt(portEl.value || '53', 10);
+    if (newPort !== {{ settings.dns_port }}) {
+      await fetch(window.location.href, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({ dns_port: newPort })
+      });
+    }
+    await call('{% url "dns_restart" %}');
+  });
+
+  refreshStatus();
+});
+</script>
+{% endblock %}
+
+

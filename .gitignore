@@ -1,0 +1,17 @@
+*db.sqlite3
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+*.pyzwzw
+*.pyzwzwz
+*.pyzwzwzw
+*.pyzwzwzwz
+.pytest_cache/
+venv/
+doc_and_guide/

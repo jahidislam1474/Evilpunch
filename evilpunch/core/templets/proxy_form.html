@@ -1,0 +1,343 @@
+{% extends 'base.html' %}
+{% block title %}{{ instance|default_if_none:'New' }} Proxy · EvilPunch{% endblock %}
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-xl-8">
+      <!-- Header Section -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 class="h3 mb-1 text-white">
+            <i class="fas fa-network-wired me-2 text-primary"></i>
+            {{ instance|default_if_none:'Create New' }} Proxy
+          </h1>
+          <p class="text-muted mb-0">Configure proxy server settings for your phishlets</p>
+        </div>
+        <a href="{% url 'proxy_list' %}" class="btn btn-outline-light">
+          <i class="fas fa-arrow-left me-2"></i>Back to List
+        </a>
+      </div>
+
+      <!-- Main Form Card -->
+      <div class="card card-dark shadow-lg">
+        <div class="card-header bg-gradient-primary text-white">
+          <h5 class="mb-0">
+            <i class="fas fa-cog me-2"></i>Proxy Configuration
+          </h5>
+        </div>
+        <div class="card-body p-4">
+          <form method="post" id="proxy-form">
+            {% csrf_token %}
+            
+            <!-- Basic Settings Row -->
+            <div class="row g-4 mb-4">
+              <!-- Name Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-tag me-2 text-primary"></i>Proxy Name
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-network-wired text-muted"></i>
+                    </span>
+                    <input type="text" class="form-control" name="name" 
+                           value="{{ instance.name|default:'' }}" 
+                           placeholder="e.g., My HTTP Proxy" required>
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Display name for easy identification
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Proxy Type Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-server me-2 text-primary"></i>Proxy Type
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-cog text-muted"></i>
+                    </span>
+                    <select class="form-select" name="proxy_type" required>
+                      <option value="">Select proxy type</option>
+                      <option value="http" {% if instance.proxy_type == 'http' %}selected{% endif %}>HTTP Proxy</option>
+                      <option value="https" {% if instance.proxy_type == 'https' %}selected{% endif %}>HTTPS Proxy</option>
+                      <option value="socks4" {% if instance.proxy_type == 'socks4' %}selected{% endif %}>SOCKS4 Proxy</option>
+                      <option value="socks5" {% if instance.proxy_type == 'socks5' %}selected{% endif %}>SOCKS5 Proxy</option>
+                    </select>
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Protocol type for the proxy server
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Connection Settings Row -->
+            <div class="row g-4 mb-4">
+              <!-- Host Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-globe me-2 text-primary"></i>Host
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-server text-muted"></i>
+                    </span>
+                    <input type="text" class="form-control" name="host" 
+                           value="{{ instance.host|default:'' }}" 
+                           placeholder="e.g., proxy.example.com or 192.168.1.100" required>
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Proxy server hostname or IP address
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Port Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-plug me-2 text-primary"></i>Port
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-hashtag text-muted"></i>
+                    </span>
+                    <input type="number" class="form-control" name="port" 
+                           value="{{ instance.port|default:'' }}" 
+                           placeholder="e.g., 8080" min="1" max="65535" required>
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Proxy server port number (1-65535)
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Authentication Settings Row -->
+            <div class="row g-4 mb-4">
+              <!-- Username Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-user me-2 text-primary"></i>Username
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-user text-muted"></i>
+                    </span>
+                    <input type="text" class="form-control" name="username" 
+                           value="{{ instance.username|default:'' }}" 
+                           placeholder="Proxy username (optional)">
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Authentication username if required
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Password Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-lock me-2 text-primary"></i>Password
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-key text-muted"></i>
+                    </span>
+                    <input type="password" class="form-control" name="password" 
+                           value="{{ instance.password|default:'' }}" 
+                           placeholder="Proxy password (optional)">
+                  </div>
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Authentication password if required
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Status Row -->
+            <div class="row mb-4">
+              <div class="col-12">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="is_active" 
+                         id="is_active" {% if instance.is_active or not instance %}checked{% endif %}>
+                  <label class="form-check-label fw-semibold text-white" for="is_active">
+                    <i class="fas fa-toggle-on me-2 text-success"></i>Active
+                  </label>
+                  <div class="form-text text-muted ms-4">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Enable this proxy for use with phishlets
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="d-flex gap-3 mt-5 pt-3 border-top border-secondary">
+              <button class="btn btn-primary btn-lg px-4" type="submit" id="submit-btn">
+                <i class="fas fa-save me-2"></i>
+                {% if instance %}Update{% else %}Create{% endif %} Proxy
+              </button>
+              <button class="btn btn-info btn-lg px-4" type="button" id="test-proxy-btn">
+                <i class="fas fa-vial me-2"></i>Test Proxy
+              </button>
+              <a href="{% url 'proxy_list' %}" class="btn btn-outline-secondary btn-lg px-4">
+                <i class="fas fa-times me-2"></i>Cancel
+              </a>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Info Card -->
+      <div class="card card-dark mt-4">
+        <div class="card-header">
+          <h6 class="mb-0">
+            <i class="fas fa-info-circle me-2 text-info"></i>Proxy Configuration Tips
+          </h6>
+        </div>
+        <div class="card-body">
+          <div class="row">
+            <div class="col-md-6">
+              <h6 class="text-white">Common Proxy Ports:</h6>
+              <ul class="text-muted">
+                <li><strong>HTTP:</strong> 8080, 3128, 8888</li>
+                <li><strong>HTTPS:</strong> 8443, 3129</li>
+                <li><strong>SOCKS:</strong> 1080, 1081</li>
+                <li><strong>Custom:</strong> Any port 1-65535</li>
+              </ul>
+            </div>
+            <div class="col-md-6">
+              <h6 class="text-white">Authentication:</h6>
+              <ul class="text-muted">
+                <li>Leave blank for public proxies</li>
+                <li>Required for private/corporate proxies</li>
+                <li>Username/password are stored securely</li>
+                <li>Can be updated anytime</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const form = document.getElementById('proxy-form');
+  
+  form.addEventListener('submit', function(e) {
+    // Basic validation
+    const host = form.querySelector('input[name="host"]').value.trim();
+    const port = form.querySelector('input[name="port"]').value.trim();
+    const proxyType = form.querySelector('select[name="proxy_type"]').value;
+    
+    if (!host || !port || !proxyType) {
+      e.preventDefault();
+      alert('Please fill in all required fields.');
+      return;
+    }
+    
+    // Port validation
+    const portNum = parseInt(port);
+    if (portNum < 1 || portNum > 65535) {
+      e.preventDefault();
+      alert('Port must be between 1 and 65535.');
+      return;
+    }
+    
+    // Show loading state
+    const submitBtn = document.getElementById('submit-btn');
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Saving...';
+  });
+  
+  // Auto-format host input
+  const hostInput = form.querySelector('input[name="host"]');
+  hostInput.addEventListener('blur', function() {
+    let value = this.value.trim();
+    
+    // Remove protocol if user included it
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      value = value.replace(/^https?:\/\//, '');
+    }
+    
+    // Remove trailing slash
+    if (value.endsWith('/')) {
+      value = value.slice(0, -1);
+    }
+    
+    this.value = value;
+  });
+  
+  // Test Proxy functionality
+  const testProxyBtn = document.getElementById('test-proxy-btn');
+  testProxyBtn.addEventListener('click', function() {
+    const host = form.querySelector('input[name="host"]').value.trim();
+    const port = form.querySelector('input[name="port"]').value.trim();
+    const proxyType = form.querySelector('select[name="proxy_type"]').value;
+    const username = form.querySelector('input[name="username"]').value.trim();
+    const password = form.querySelector('input[name="password"]').value.trim();
+    
+    if (!host || !port || !proxyType) {
+      alert('Please fill in all required fields before testing.');
+      return;
+    }
+    
+    // Show loading state
+    const originalText = testProxyBtn.innerHTML;
+    testProxyBtn.disabled = true;
+    testProxyBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Testing...';
+    
+    // Create test data
+    const testData = {
+      host: host,
+      port: port,
+      proxy_type: proxyType,
+      username: username,
+      password: password
+    };
+    
+    // Send test request (you'll need to implement this endpoint in your views)
+    fetch('{% url "test_proxy" %}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+      },
+      body: JSON.stringify(testData)
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        alert('✅ Proxy test successful! Connection established.');
+      } else {
+        alert('❌ Proxy test failed: ' + (data.error || 'Connection failed'));
+      }
+    })
+    .catch(error => {
+      alert('❌ Proxy test failed: ' + error.message);
+    })
+    .finally(() => {
+      // Restore button state
+      testProxyBtn.disabled = false;
+      testProxyBtn.innerHTML = originalText;
+    });
+  });
+});
+</script>
+{% endblock %}

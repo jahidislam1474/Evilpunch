@@ -1,0 +1,264 @@
+{% extends 'base.html' %}
+{% block title %}Proxies · EvilPunch{% endblock %}
+{% block content %}
+{% csrf_token %}
+<div class="container-fluid py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-xl-10">
+      <!-- Header Section -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 class="h3 mb-1 text-white">
+            <i class="fas fa-network-wired me-2 text-primary"></i>
+            Proxy Management
+          </h1>
+          <p class="text-muted mb-0">Manage HTTP, HTTPS, and SOCKS proxies for your phishlets</p>
+        </div>
+        <a href="{% url 'proxy_create' %}" class="btn btn-primary">
+          <i class="fas fa-plus me-2"></i>Add Proxy
+        </a>
+      </div>
+
+      <!-- Proxies List Card -->
+      <div class="card card-dark shadow-lg">
+        <div class="card-header bg-gradient-primary text-white">
+          <h5 class="mb-0">
+            <i class="fas fa-list me-2"></i>Configured Proxies
+          </h5>
+        </div>
+        <div class="card-body p-0">
+          {% if proxies %}
+            <div class="table-responsive">
+              <table class="table table-dark table-hover mb-0">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Host:Port</th>
+                    <th>Authentication</th>
+                    <th>Status</th>
+                    <th>Phishlets</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for proxy in proxies %}
+                  <tr>
+                    <td>
+                      <div class="d-flex align-items-center">
+                        <i class="fas fa-network-wired me-2 text-primary"></i>
+                        <strong>{{ proxy.name }}</strong>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge bg-secondary">{{ proxy.get_proxy_type_display }}</span>
+                    </td>
+                    <td>
+                      <code class="text-info">{{ proxy.host }}:{{ proxy.port }}</code>
+                    </td>
+                    <td>
+                      {% if proxy.username and proxy.password %}
+                        <span class="badge bg-success">Yes</span>
+                        <small class="text-muted d-block">{{ proxy.username }}</small>
+                      {% else %}
+                        <span class="badge bg-secondary">None</span>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <div class="form-check form-switch">
+                        <input class="form-check-input proxy-toggle" type="checkbox" 
+                               data-proxy-id="{{ proxy.id }}" 
+                               {% if proxy.is_active %}checked{% endif %}
+                               id="proxy-toggle-{{ proxy.id }}">
+                        <label class="form-check-label" for="proxy-toggle-{{ proxy.id }}">
+                          <span class="badge {% if proxy.is_active %}bg-success{% else %}bg-danger{% endif %}">
+                            {% if proxy.is_active %}Active{% else %}Inactive{% endif %}
+                          </span>
+                        </label>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge bg-info">{{ proxy.phishlets.count }}</span>
+                      {% if proxy.phishlets.count > 0 %}
+                        <small class="text-muted d-block">
+                          {% for phishlet in proxy.phishlets.all|slice:":2" %}
+                            {{ phishlet.name }}{% if not forloop.last %}, {% endif %}
+                          {% endfor %}
+                          {% if proxy.phishlets.count > 2 %}
+                            +{{ proxy.phishlets.count|add:"-2" }} more
+                          {% endif %}
+                        </small>
+                      {% endif %}
+                    </td>
+                    <td>
+                      <div class="btn-group" role="group">
+                        <a href="{% url 'proxy_edit' proxy.id %}" class="btn btn-outline-primary btn-sm" title="Edit">
+                          <i class="fas fa-edit"></i>
+                        </a>
+                        <button type="button" class="btn btn-outline-danger btn-sm proxy-delete" 
+                                data-proxy-id="{{ proxy.id }}" 
+                                data-proxy-name="{{ proxy.name }}"
+                                title="Delete">
+                          <i class="fas fa-trash"></i>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="text-center py-5">
+              <i class="fas fa-network-wired fa-3x text-muted mb-3"></i>
+              <h5 class="text-muted">No proxies configured</h5>
+              <p class="text-muted">Get started by adding your first proxy server.</p>
+              <a href="{% url 'proxy_create' %}" class="btn btn-primary">
+                <i class="fas fa-plus me-2"></i>Add Your First Proxy
+              </a>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Info Card -->
+      <div class="card card-dark mt-4">
+        <div class="card-header">
+          <h6 class="mb-0">
+            <i class="fas fa-info-circle me-2 text-info"></i>Proxy Information
+          </h6>
+        </div>
+        <div class="card-body">
+          <div class="row">
+            <div class="col-md-6">
+              <h6 class="text-white">Supported Proxy Types:</h6>
+              <ul class="text-muted">
+                <li><strong>HTTP:</strong> Standard HTTP proxy for web traffic</li>
+                <li><strong>HTTPS:</strong> Secure HTTP proxy with encryption</li>
+                <li><strong>SOCKS4:</strong> SOCKS4 protocol for TCP connections</li>
+                <li><strong>SOCKS5:</strong> SOCKS5 protocol with authentication support</li>
+              </ul>
+            </div>
+            <div class="col-md-6">
+              <h6 class="text-white">Usage:</h6>
+              <ul class="text-muted">
+                <li>Assign proxies to phishlets for traffic routing</li>
+                <li>Use authentication for private proxy servers</li>
+                <li>Toggle proxies on/off as needed</li>
+                <li>Monitor which phishlets use each proxy</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteProxyModal" tabindex="-1" aria-labelledby="deleteProxyModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="deleteProxyModalLabel">Confirm Delete</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to delete the proxy "<strong id="proxyNameToDelete"></strong>"?</p>
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle me-2"></i>
+          <strong>Warning:</strong> This action cannot be undone. Any phishlets using this proxy will have their proxy setting cleared.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <a href="#" id="confirmDeleteProxy" class="btn btn-danger">Delete Proxy</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // Proxy toggle functionality
+  document.querySelectorAll('.proxy-toggle').forEach(function(toggle) {
+    toggle.addEventListener('change', function() {
+      const proxyId = this.dataset.proxyId;
+      const isChecked = this.checked;
+      
+      fetch(`/proxies/${proxyId}/toggle/`, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // Update the status badge
+          const statusBadge = this.closest('td').querySelector('.badge');
+          if (isChecked) {
+            statusBadge.className = 'badge bg-success';
+            statusBadge.textContent = 'Active';
+          } else {
+            statusBadge.className = 'badge bg-danger';
+            statusBadge.textContent = 'Inactive';
+          }
+          
+          // Show success message
+          showAlert('success', data.message);
+        } else {
+          // Revert the toggle
+          this.checked = !isChecked;
+          showAlert('danger', 'Error: ' + data.error);
+        }
+      })
+      .catch(error => {
+        // Revert the toggle
+        this.checked = !isChecked;
+        showAlert('danger', 'Error: ' + error.message);
+      });
+    });
+  });
+
+  // Proxy delete functionality
+  document.querySelectorAll('.proxy-delete').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      const proxyId = this.dataset.proxyId;
+      const proxyName = this.dataset.proxyName;
+      
+      // Set modal content
+      document.getElementById('proxyNameToDelete').textContent = proxyName;
+      document.getElementById('confirmDeleteProxy').href = `/proxies/${proxyId}/delete/`;
+      
+      // Show modal
+      const modal = new bootstrap.Modal(document.getElementById('deleteProxyModal'));
+      modal.show();
+    });
+  });
+
+  // Helper function to show alerts
+  function showAlert(type, message) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+      ${message}
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    `;
+    
+    // Insert at the top of the main content
+    const mainContent = document.querySelector('main .container');
+    mainContent.insertBefore(alertDiv, mainContent.firstChild);
+    
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+      if (alertDiv.parentNode) {
+        alertDiv.remove();
+      }
+    }, 5000);
+  }
+});
+</script>
+{% endblock %}

