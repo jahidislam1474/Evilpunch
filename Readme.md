@@ -14,6 +14,58 @@ EvilPunch is a reverse proxy framework intended for authorized red teaming, adve
   <img src="https://img.youtube.com/vi/N5iu_X73hy0/hqdefault.jpg" alt="EvilPunch Demo Video" width="640" />
   
 </a>
+## Run the Dashboard
+
+### Quick start (one command)
+
+```bash
+chmod +x run.sh && ./run.sh
+```
+
+This will:
+
+- Install Python (if missing) and tools for your OS
+- Create/activate a virtual environment
+- Install dependencies from `requirements.txt`
+- Run database migrations
+- Start the Django server using the configured host/port
+
+### Manual setup
+
+```bash
+# 1) Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# 2) Install dependencies
+pip install -r requirements.txt
+
+# 3) Run migrations and start the server
+cd evilpunch
+python manage.py migrate
+python manage.py runserver
+```
+
+### Configure host, port, and admin login
+
+- Edit `evilpunch/config/config.json`:
+  - `dashboard_host` (default `0.0.0.0`) and `dashboard_port` (default `9000`)
+  - `dashboard_username` and `dashboard_password`
+- On startup, these credentials are ensured for an admin user.
+- To use a different config path, set `REVERSE_PROXY_CONFIG_PATH` or `CONFIG_PATH`.
+
+### Access the dashboard
+
+- Local: `http://localhost:9000`
+- Remote/LAN: `http://<server-ip-or-hostname>:9000` (open the port in your firewall)
+- Log in with the credentials from `config.json` (default `admin` / `admin`). Change them immediately.
+
+### Notes
+
+- The development server binds to the host/port from `evilpunch/config/config.json`.
+- If exposing beyond localhost, set `ALLOWED_HOSTS` in `evilpunch/evilpunch/settings.py` for production use.
+
+
 
 ## Help Center
 
