@@ -6,6 +6,15 @@
 
 EvilPunch is a reverse proxy framework intended for authorized red teaming, adversary emulation, and educational security research. Use it responsibly and legally.
 
+## Demo
+
+- **Watch the demo**: [YouTube — EvilPunch Demo](https://youtu.be/N5iu_X73hy0)
+
+<a href="https://youtu.be/N5iu_X73hy0" target="_blank">
+  <img src="https://img.youtube.com/vi/N5iu_X73hy0/hqdefault.jpg" alt="EvilPunch Demo Video" width="640" />
+  
+</a>
+
 ## Help Center
 
 Everything you need to get the most from EvilPunch — tutorials, docs, tools, courses, and community — all in one place.
