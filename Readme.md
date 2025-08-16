@@ -2,9 +2,26 @@
   <img src="evilpunch/public/static/images/evilpunch.png" alt="EvilPunch Logo" width="180" />
 </p>
 
-### EvilPunch Reverse Proxy
+### EvilPunch — Offensive Reverse Proxy
 
-EvilPunch is a reverse proxy framework intended for authorized red teaming, adversary emulation, and educational security research. Use it responsibly and legally.
+<p align="center">
+  <a href="https://www.djangoproject.com/" target="_blank"><img alt="Built with Django" src="https://img.shields.io/badge/built%20with-Django-0C4B33?logo=django&logoColor=white"></a>
+  <a href="https://python.org" target="_blank"><img alt="Python" src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://youtu.be/N5iu_X73hy0" target="_blank"><img alt="Demo" src="https://img.shields.io/badge/watch-demo-FF0000?logo=youtube&logoColor=white"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-active-success">
+  
+</p>
+
+<p align="center"><i>Fast, configurable reverse proxy dashboard for authorized red teaming and security research.</i></p>
+
+## Table of Contents
+
+- [Demo](#demo)
+- [Features](#features)
+- [Run the Dashboard](#run-the-dashboard)
+- [Community & Resources](#community--resources)
+- [Legal & Ethical Notice](#legal--ethical-notice)
+- [License & Permissions](#license--permissions)
 
 ## Demo
 
@@ -13,7 +30,15 @@ EvilPunch is a reverse proxy framework intended for authorized red teaming, adve
 <a href="https://youtu.be/N5iu_X73hy0" target="_blank">
   <img src="https://img.youtube.com/vi/N5iu_X73hy0/hqdefault.jpg" alt="EvilPunch Demo Video" width="640" />
   
-</a>
+ </a>
+
+## Features
+
+- **Web dashboard**: Admin login ensured from `config.json`.
+- **Config-driven**: Set host, port, and credentials in `evilpunch/config/config.json`.
+- **One-liner start**: `./run.sh` handles env, deps, migrate, and run.
+- **Django 5**: Modern framework, SQLite by default, easy to extend.
+- **Static assets**: Bundled images and styles via `public/static`.
 ## Run the Dashboard
 
 ### Quick start (one command)
@@ -67,7 +92,7 @@ python manage.py runserver
 
 
 
-## Help Center
+## Community & Resources
 
 Everything you need to get the most from EvilPunch — tutorials, docs, tools, courses, and community — all in one place.
 
