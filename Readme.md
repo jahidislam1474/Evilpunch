@@ -2,7 +2,7 @@
   <img src="evilpunch/public/static/images/evilpunch.png" alt="EvilPunch Logo" width="180" />
 </p>
 
-### EvilPunch — Offensive Reverse Proxy
+### EvilPunch — Offensive Reverse Proxy.
 
 <p align="center">
   <a href="https://www.djangoproject.com/" target="_blank"><img alt="Built with Django" src="https://img.shields.io/badge/built%20with-Django-0C4B33?logo=django&logoColor=white"></a>
