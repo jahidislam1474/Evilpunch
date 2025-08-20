@@ -44,7 +44,9 @@
 ### Quick start (one command)
 
 ```bash
-chmod +x run.sh && ./run.sh
+chmod +x run.sh && ./run.sh -d # for devloper mode
+
+chmod +x run.sh && ./run.sh -p # for production mode
 ```
 
 This will:
@@ -151,6 +153,6 @@ You indicated you want a license that allows free use but requires permission fo
 - **How to Request Permission**: Contact the maintainers via Telegram at [t.me/fluxxset](https://t.me/fluxxset) or via the website [fluxxset.com](https://fluxxset.com/).
 - **No Warranty**: The software is provided “as is” without warranty of any kind.
 
-If you prefer a standard license, consider using a source-available license (e.g., BUSL-1.1 or a custom source-available grant) tailored to your requirements.
+If you prefer a standard license, consider using a source-available license (e.g., BUSL-1.1 or a custom source-available grant) tailored to your requirements
 
 
