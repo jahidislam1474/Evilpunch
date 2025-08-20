@@ -18,3 +18,4 @@ doc_and_guide/
 .DS_Store
 *.pem
 config.json
+server_ssl/
