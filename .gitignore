@@ -19,3 +19,5 @@ doc_and_guide/
 *.pem
 config.json
 server_ssl/
+cache_folder/
+runtime_certs/
