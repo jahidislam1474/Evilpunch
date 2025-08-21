@@ -64,6 +64,7 @@ class Phishlet(models.Model):
         related_name="phishlets",
         help_text="Proxy to use for this phishlet (optional)"
     )
+    is_cache_enabled = models.BooleanField(default=True, help_text="Whether static file caching is enabled for this phishlet")
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

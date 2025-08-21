@@ -16,3 +16,8 @@ __pycache__/
 venv/
 doc_and_guide/
 .DS_Store
+*.pem
+config.json
+server_ssl/
+cache_folder/
+runtime_certs/*.pem

@@ -56,33 +56,12 @@ class Command(BaseRunserverCommand):
 
         # Before printing banner, ensure admin user from config exists/updated
         try:
-            from django.contrib.auth import get_user_model
-            from core.config import get_config
-            cfg = get_config()
-            username = cfg.get("dashboard_username")
-            password = cfg.get("dashboard_password")
-            if username and password:
-                User = get_user_model()
-                user, created = User.objects.get_or_create(
-                    username=username,
-                    defaults={
-                        "is_staff": True,
-                        "is_superuser": True,
-                        "email": "",
-                    },
-                )
-                # If user existed but username in config differs from an existing admin user,
-                # we only manage the user with the configured username. Update password each run.
-                user.set_password(password)
-                # Ensure admin flags are set
-                if not user.is_staff:
-                    user.is_staff = True
-                if not user.is_superuser:
-                    user.is_superuser = True
-                user.save()
-                print(f"{ANSI_CYAN}[admin]{ANSI_RESET} Ensured admin user '{username}' exists and password is set.")
+            from django.apps import apps
+            core_config = apps.get_app_config('core')
+            if hasattr(core_config, 'setup_admin_user'):
+                core_config.setup_admin_user()
             else:
-                print(f"{ANSI_CYAN}[admin]{ANSI_RESET} Skipped admin setup: 'dashboard_username' or 'dashboard_password' missing in config.")
+                print(f"{ANSI_CYAN}[admin]{ANSI_RESET} Admin setup method not found in core app config.")
         except Exception as e:
             print(f"{ANSI_CYAN}[admin]{ANSI_RESET} Admin setup error: {e}")
 

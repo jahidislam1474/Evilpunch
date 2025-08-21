@@ -203,9 +203,7 @@
         <h5 class="modal-title">Request Let's Encrypt Wildcard SSL Certificate</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <form method="post" id="letsencrypt-form">
-        {% csrf_token %}
-        <div class="modal-body">
+      <div class="modal-body">
           <div class="mb-2 text-secondary" id="le-domain"></div>
           
           <div class="alert alert-info">
@@ -213,45 +211,29 @@
             This will request a wildcard SSL certificate from Let's Encrypt for <strong id="le-domain-name"></strong> and all its subdomains.
           </div>
           
-          <div class="alert alert-success">
-            <i class="fas fa-check-circle me-2"></i>
-            <strong>Python-based:</strong> Uses Python ACME library - no external system dependencies required!
-          </div>
+
           
           <div class="mb-3">
-            <label class="form-label">Email Address</label>
-            <input type="email" class="form-control" name="email" placeholder="your-email@example.com" required />
-            <div class="form-text">Required for Let's Encrypt account and notifications</div>
-          </div>
-          
-          <div class="mb-3">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="staging" id="staging-check" value="true">
-              <label class="form-check-label" for="staging-check">
-                Use staging environment (recommended for testing)
-              </label>
-              <div class="form-text">Staging environment has higher rate limits and won't count against production limits</div>
+            <label class="form-label">Certbot Command for Wildcard SSL</label>
+            <div class="input-group">
+              <input type="text" class="form-control" id="certbot-command" readonly />
+              <button class="btn btn-outline-secondary" type="button" onclick="copyCertbotCommand()">
+                <i class="fas fa-copy"></i> Copy
+              </button>
             </div>
-          </div>
-          
-          <div class="mb-3">
-            <label class="form-label">Domain</label>
-            <input type="text" class="form-control" name="domain" id="le-common-name" readonly />
-            <div class="form-text">This will be automatically set to the domain</div>
+            <div class="form-text">
+              <strong>Note:</strong> This command requires DNS challenge validation. Make sure your DNS provider supports API access for ACME challenges.
+            </div>
           </div>
           
           <div class="alert alert-info">
             <i class="fas fa-info-circle me-2"></i>
-            <strong>Benefits:</strong> Free, trusted by browsers, automatic renewal, 90-day validity
+            <strong>Instructions:</strong> Copy the command above and run it on a server with access to your DNS provider's API. You'll need to install certbot first: <code>pip install certbot[all]</code>
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-info">
-            <i class="fas fa-globe me-2"></i>Request Certificate
-          </button>
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Close</button>
         </div>
-      </form>
     </div>
   </div>
 </div>
@@ -373,10 +355,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const host = button.getAttribute('data-host');
     document.getElementById('le-domain').textContent = `Domain: ${host}`;
     document.getElementById('le-domain-name').textContent = host;
-    document.getElementById('le-common-name').value = host;
     
-    const form = document.getElementById('letsencrypt-form');
-    form.action = `/proxy-domains/${id}/letsencrypt-ssl/`;
+    // Generate and display certbot command
+    generateCertbotCommand(host);
   });
 
   // Handle SSL generation form submission
@@ -424,50 +405,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Handle Let's Encrypt form submission
-  document.getElementById('letsencrypt-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const form = e.target;
-    const submitBtn = form.querySelector('button[type="submit"]');
-    const originalText = submitBtn.innerHTML;
-    
-    // Show loading state
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Requesting...';
-    
-    try {
-      const formData = new FormData(form);
-      const response = await fetch(form.action, {
-        method: 'POST',
-        headers: {
-          'X-CSRFToken': csrfToken,
-        },
-        body: formData
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        // Show success message
-        showAlert('Let\'s Encrypt certificate requested successfully!', 'success');
-        // Close modal
-        const modal = bootstrap.Modal.getInstance(document.getElementById('modalLetsEncrypt'));
-        modal.hide();
-        // Reload page to show updated certificate status
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        showAlert(`Error: ${result.error || 'Failed to request certificate'}`, 'danger');
-      }
-    } catch (error) {
-      console.error('Error requesting Let\'s Encrypt certificate:', error);
-      showAlert('Error: Failed to request Let\'s Encrypt certificate', 'danger');
-    } finally {
-      // Reset button state
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = originalText;
-    }
-  });
+
 });
 
 // Helper function to show alerts
@@ -489,6 +427,40 @@ function showAlert(message, type = 'info') {
     }
   }, 5000);
 }
+
+// Generate certbot command for wildcard SSL
+function generateCertbotCommand(domain) {
+  // Clean the domain - remove www. prefix and any trailing slashes
+  const baseDomain = domain.replace(/^www\./, '').replace(/\/$/, '');
+  const command = `certbot certonly --manual --preferred-challenges=dns --email admin@evilme.website --agree-tos --no-eff-email -d ${baseDomain} -d *.${baseDomain}`;
+  
+  document.getElementById('certbot-command').value = command;
+}
+
+
+
+
+
+// Copy certbot command to clipboard
+function copyCertbotCommand() {
+  const commandInput = document.getElementById('certbot-command');
+  commandInput.select();
+  commandInput.setSelectionRange(0, 99999); // For mobile devices
+  
+  try {
+    document.execCommand('copy');
+    showAlert('Certbot command copied to clipboard!', 'success');
+  } catch (err) {
+    // Fallback for modern browsers
+    navigator.clipboard.writeText(commandInput.value).then(() => {
+      showAlert('Certbot command copied to clipboard!', 'success');
+    }).catch(() => {
+      showAlert('Failed to copy command. Please select and copy manually.', 'warning');
+    });
+  }
+}
+
+
 </script>
 {% endblock %}
 

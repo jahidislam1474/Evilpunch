@@ -4,12 +4,12 @@ from .models import Phishlet, Proxy, DNSSettings, ProxyDomain, DomainCertificate
 
 @admin.register(Phishlet)
 class PhishletAdmin(admin.ModelAdmin):
-    list_display = ("name", "is_active", "proxy_auth", "proxy", "updated_at")
-    list_filter = ("is_active", "proxy")
+    list_display = ("name", "is_active", "is_cache_enabled", "proxy_auth", "proxy", "updated_at")
+    list_filter = ("is_active", "is_cache_enabled", "proxy")
     search_fields = ("name", "proxy_auth")
     readonly_fields = ("created_at", "updated_at")
     fieldsets = (
-        (None, {"fields": ("name", "is_active", "proxy_auth", "proxy")}),
+        (None, {"fields": ("name", "is_active", "is_cache_enabled", "proxy_auth", "proxy")}),
         ("Content", {"fields": ("data",)}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )

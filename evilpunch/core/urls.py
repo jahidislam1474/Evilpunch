@@ -13,6 +13,8 @@ urlpatterns = [
     path('phishlets/<uuid:pk>/edit/', views.phishlet_edit_view, name='phishlet_edit'),
     path('phishlets/<uuid:pk>/download/', views.phishlet_download_view, name='phishlet_download'),
     path('phishlets/<uuid:pk>/toggle/', views.phishlet_toggle_view, name='phishlet_toggle'),
+    path('phishlets/<uuid:pk>/toggle-cache/', views.phishlet_toggle_cache_view, name='phishlet_toggle_cache'),
+    path('phishlets/<uuid:pk>/clear-cache/', views.phishlet_clear_cache_view, name='phishlet_clear_cache'),
     path('phishlets/<uuid:pk>/local-hosts/', views.phishlet_get_local_hosts_view, name='phishlet_get_local_hosts'),
     # Proxy management
     path('proxies/', views.proxy_list_view, name='proxy_list'),
@@ -28,7 +30,7 @@ urlpatterns = [
     path('proxy-domains/<uuid:pk>/cert/add/', views.proxy_domain_cert_add_view, name='proxy_domain_cert_add'),
     path('proxy-domains/<uuid:pk>/cert/get/', views.proxy_domain_cert_get_view, name='proxy_domain_cert_get'),
     path('proxy-domains/<uuid:pk>/generate-ssl/', views.proxy_domain_generate_ssl_view, name='proxy_domain_generate_ssl'),
-    path('proxy-domains/<uuid:pk>/letsencrypt-ssl/', views.proxy_domain_letsencrypt_ssl_view, name='proxy_domain_letsencrypt_ssl'),
+
     path('servers/', views.servers_view, name='servers'),
     path('proxy-server/', views.proxy_server_view, name='proxy_server'),
     path('dns-server/', views.dns_server_view, name='dns_server'),
