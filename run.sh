@@ -78,7 +78,7 @@ install_packages() {
             sudo apt upgrade -y
             
             echo "Installing Python3 and related packages..."
-            sudo apt install -y python3 python3-pip python3-venv
+            sudo apt install -y python3 python3-pip python3-venv certbot
             ;;
         "macos")
             echo "Detected macOS system"
@@ -89,16 +89,17 @@ install_packages() {
             
             echo "Installing Python3 and related packages..."
             brew install python3
+            brew install certbot
             ;;
         "rhel")
             echo "Detected RHEL/CentOS system"
             sudo yum update -y
-            sudo yum install -y python3 python3-pip python3-venv
+            sudo yum install -y python3 python3-pip python3-venv certbot
             ;;
         "arch")
             echo "Detected Arch Linux system"
             sudo pacman -Syu --noconfirm
-            sudo pacman -S --noconfirm python python-pip python-virtualenv
+            sudo pacman -S --noconfirm python python-pip python-virtualenv certbot
             ;;
         *)
             echo "Unsupported operating system: $os_type"
