@@ -83,7 +83,7 @@ def logout_view(request):
 class PhishletForm(forms.ModelForm):
     class Meta:
         model = Phishlet
-        fields = ["name", "is_active", "proxy_auth", "proxy", "data"]
+        fields = ["name", "is_active", "is_cache_enabled", "proxy_auth", "proxy", "data"]
 
     def clean(self):
         cleaned = super().clean()
@@ -154,6 +154,17 @@ def phishlet_toggle_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
     instance.is_active = not instance.is_active
     instance.save(update_fields=["is_active", "updated_at"])
     return JsonResponse({"ok": True, "is_active": instance.is_active})
+
+
+@login_required
+@user_passes_test(is_admin)
+def phishlet_toggle_cache_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    instance = Phishlet.objects.get(pk=pk)
+    instance.is_cache_enabled = not instance.is_cache_enabled
+    instance.save(update_fields=["is_cache_enabled", "updated_at"])
+    return JsonResponse({"ok": True, "is_cache_enabled": instance.is_cache_enabled})
 
 
 @login_required

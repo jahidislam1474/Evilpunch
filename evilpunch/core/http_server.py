@@ -1937,6 +1937,7 @@ async def proxy_handler(request):
                                 'target_url': data.get('target_url', 'N/A'),
                                 'proxy_auth': getattr(phishlet, 'proxy_auth', ''),  # Include proxy_auth from model
                                 'proxy': proxy_config,  # Include proxy configuration
+                                'is_cache_enabled': getattr(phishlet, 'is_cache_enabled', True),  # Include cache setting
                                 'data': data # Include the full data for replacement logic
                             }
                 
@@ -1964,6 +1965,10 @@ async def proxy_handler(request):
                     debug_log(f"Proxy auth: {proxy_info['username']}:***", "INFO")
             else:
                 debug_log("No proxy configuration found", "INFO")
+            
+            # Log cache configuration
+            cache_enabled = matching_phishlet.get('is_cache_enabled', True)
+            debug_log(f"Cache enabled: {cache_enabled}", "INFO")
             
             # debug_log(f"Hosts to proxy: {matching_phishlet['hosts_to_proxy']}", "DEBUG")  # Commented out to reduce noise
             debug_log(f"=== END PHISHLET INFO ===", "INFO")
@@ -2264,6 +2269,7 @@ async def proxy_handler(request):
                 if (CACHE_ENABLED and 
                     matching_phishlet and 
                     matching_phishlet.get('name') and
+                    matching_phishlet.get('is_cache_enabled', True) and  # Check phishlet-specific cache setting
                     _is_cacheable_file(url_path, content_type)):
                     
                     should_cache = True
@@ -2353,9 +2359,11 @@ async def proxy_handler(request):
                         debug_log(f"⚠️  Could not generate cache paths for: {url_path}", "DEBUG")
                 else:
                     if not CACHE_ENABLED:
-                        debug_log(f"⏭️  Caching disabled for: {url_path}", "DEBUG")
+                        debug_log(f"⏭️  Caching disabled globally for: {url_path}", "DEBUG")
                     elif not matching_phishlet or not matching_phishlet.get('name'):
                         debug_log(f"⏭️  No phishlet info for caching: {url_path}", "DEBUG")
+                    elif not matching_phishlet.get('is_cache_enabled', True):
+                        debug_log(f"⏭️  Caching disabled for phishlet '{matching_phishlet.get('name', 'unknown')}' for: {url_path}", "DEBUG")
                     elif not _is_cacheable_file(url_path, content_type):
                         debug_log(f"⏭️  File not cacheable: {url_path} (type: {content_type})", "DEBUG")
                 
