@@ -169,6 +169,71 @@ def phishlet_toggle_cache_view(request: HttpRequest, pk: uuid.UUID) -> JsonRespo
 
 @login_required
 @user_passes_test(is_admin)
+def phishlet_clear_cache_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    
+    try:
+        instance = Phishlet.objects.get(pk=pk)
+        phishlet_name = instance.name
+        
+        # Import here to avoid circular imports
+        from . import http_server
+        
+        # Clear cache for this specific phishlet
+        cleared_count = 0
+        total_size_cleared = 0
+        
+        import os
+        from pathlib import Path
+        
+        cache_folder = getattr(http_server, 'CACHE_FOLDER', 'cache_folder')
+        phishlet_cache_dir = Path(cache_folder) / phishlet_name
+        
+        if phishlet_cache_dir.exists() and phishlet_cache_dir.is_dir():
+            for cache_file in phishlet_cache_dir.iterdir():
+                if cache_file.is_file():
+                    try:
+                        if cache_file.suffix == '.meta':
+                            # Get file size before deletion for stats
+                            try:
+                                import json
+                                with open(cache_file, 'r', encoding='utf-8') as f:
+                                    metadata = json.load(f)
+                                    total_size_cleared += metadata.get('file_size', 0)
+                            except:
+                                pass
+                        
+                        cache_file.unlink()
+                        cleared_count += 1
+                    except Exception as e:
+                        # Log error but continue with other files
+                        print(f"Error removing cache file {cache_file}: {e}")
+        
+        # Update cache statistics if available
+        try:
+            cache_stats = getattr(http_server, '_cache_stats', {})
+            if 'total_size_bytes' in cache_stats:
+                cache_stats['total_size_bytes'] = max(0, cache_stats['total_size_bytes'] - total_size_cleared)
+        except:
+            pass
+        
+        return JsonResponse({
+            "ok": True, 
+            "message": f"Cache cleared for {phishlet_name}: {cleared_count} files, {total_size_cleared / (1024*1024):.2f}MB freed",
+            "cleared_files": cleared_count,
+            "size_freed_mb": round(total_size_cleared / (1024*1024), 2),
+            "phishlet_name": phishlet_name
+        })
+        
+    except Phishlet.DoesNotExist:
+        return JsonResponse({"error": "Phishlet not found"}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": f"Failed to clear cache: {str(e)}"}, status=500)
+
+
+@login_required
+@user_passes_test(is_admin)
 def phishlet_get_local_hosts_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
     if request.method != "GET":
         return JsonResponse({"error": "GET required"}, status=405)

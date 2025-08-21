@@ -2,13 +2,22 @@
 {% block title %}Phishlets · EvilPunch{% endblock %}
 {% block content %}
 <style>
-  .btn-toggle-cache {
+  .btn-toggle-cache,
+  .btn-clear-cache {
     transition: all 0.2s ease-in-out;
   }
   
-  .btn-toggle-cache:hover {
+  .btn-toggle-cache:hover,
+  .btn-clear-cache:hover {
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  }
+  
+  .btn-clear-cache:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
   }
   
   .cache-status-badge {
@@ -110,6 +119,11 @@
                         data-phishlet-id="{{ p.id }}"
                         title="{% if p.is_cache_enabled %}Disable{% else %}Enable{% endif %} caching">
                   {% if p.is_cache_enabled %}Disable Cache{% else %}Enable Cache{% endif %}
+                </button>
+                <button class="btn btn-sm btn-outline-warning btn-clear-cache" 
+                        data-phishlet-id="{{ p.id }}"
+                        title="Clear all cached files for this phishlet">
+                  Clear Cache
                 </button>
                 <a href="{% url 'phishlet_edit' p.pk %}" class="btn btn-sm btn-outline-light">Edit</a>
               </div>
@@ -417,6 +431,64 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         console.error('Failed to toggle cache:', err);
         showToast('error', 'Failed to toggle cache setting');
+      }
+    });
+  });
+
+  // Clear cache functionality
+  document.querySelectorAll('.btn-clear-cache').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const tr = e.target.closest('tr');
+      const id = tr.dataset.id;
+      const button = e.target;
+      
+      // Show confirmation dialog
+      if (!confirm('Are you sure you want to clear all cached files for this phishlet? This action cannot be undone.')) {
+        return;
+      }
+      
+      // Disable button and show loading state
+      button.disabled = true;
+      const originalText = button.textContent;
+      button.textContent = 'Clearing...';
+      button.classList.remove('btn-outline-warning');
+      button.classList.add('btn-secondary');
+      
+      try {
+        const res = await fetch(`/phishlets/${id}/clear-cache/`, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrfToken },
+        });
+        const data = await res.json();
+        
+        if (data.ok) {
+          // Show success message
+          showToast('success', data.message);
+          
+          // Update button to show completion
+          button.textContent = 'Cleared!';
+          button.classList.remove('btn-secondary');
+          button.classList.add('btn-success');
+          
+          // Reset button after 2 seconds
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.remove('btn-success');
+            button.classList.add('btn-outline-warning');
+            button.disabled = false;
+          }, 2000);
+        } else {
+          throw new Error(data.error || 'Failed to clear cache');
+        }
+      } catch (err) {
+        console.error('Failed to clear cache:', err);
+        showToast('error', `Failed to clear cache: ${err.message}`);
+        
+        // Reset button on error
+        button.textContent = originalText;
+        button.classList.remove('btn-secondary');
+        button.classList.add('btn-outline-warning');
+        button.disabled = false;
       }
     });
   });

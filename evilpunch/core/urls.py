@@ -14,6 +14,7 @@ urlpatterns = [
     path('phishlets/<uuid:pk>/download/', views.phishlet_download_view, name='phishlet_download'),
     path('phishlets/<uuid:pk>/toggle/', views.phishlet_toggle_view, name='phishlet_toggle'),
     path('phishlets/<uuid:pk>/toggle-cache/', views.phishlet_toggle_cache_view, name='phishlet_toggle_cache'),
+    path('phishlets/<uuid:pk>/clear-cache/', views.phishlet_clear_cache_view, name='phishlet_clear_cache'),
     path('phishlets/<uuid:pk>/local-hosts/', views.phishlet_get_local_hosts_view, name='phishlet_get_local_hosts'),
     # Proxy management
     path('proxies/', views.proxy_list_view, name='proxy_list'),
