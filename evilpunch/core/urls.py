@@ -28,7 +28,7 @@ urlpatterns = [
     path('proxy-domains/<uuid:pk>/cert/add/', views.proxy_domain_cert_add_view, name='proxy_domain_cert_add'),
     path('proxy-domains/<uuid:pk>/cert/get/', views.proxy_domain_cert_get_view, name='proxy_domain_cert_get'),
     path('proxy-domains/<uuid:pk>/generate-ssl/', views.proxy_domain_generate_ssl_view, name='proxy_domain_generate_ssl'),
-    path('proxy-domains/<uuid:pk>/letsencrypt-ssl/', views.proxy_domain_letsencrypt_ssl_view, name='proxy_domain_letsencrypt_ssl'),
+
     path('servers/', views.servers_view, name='servers'),
     path('proxy-server/', views.proxy_server_view, name='proxy_server'),
     path('dns-server/', views.dns_server_view, name='dns_server'),
