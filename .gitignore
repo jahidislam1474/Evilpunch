@@ -20,4 +20,4 @@ doc_and_guide/
 config.json
 server_ssl/
 cache_folder/
-runtime_certs/
+runtime_certs/*.pem
