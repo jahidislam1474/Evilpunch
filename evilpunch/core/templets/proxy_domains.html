@@ -430,8 +430,9 @@ function showAlert(message, type = 'info') {
 
 // Generate certbot command for wildcard SSL
 function generateCertbotCommand(domain) {
-  const baseDomain = domain.replace(/^www\./, ''); // Remove www if present
-  const command = `certbot certonly --manual --preferred-challenges=dns --email your-email@example.com --agree-tos --no-eff-email -d ${baseDomain} -d *.${baseDomain}`;
+  // Clean the domain - remove www. prefix and any trailing slashes
+  const baseDomain = domain.replace(/^www\./, '').replace(/\/$/, '');
+  const command = `certbot certonly --manual --preferred-challenges=dns --email admin@evilme.website --agree-tos --no-eff-email -d ${baseDomain} -d *.${baseDomain}`;
   
   document.getElementById('certbot-command').value = command;
 }

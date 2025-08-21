@@ -24,10 +24,7 @@ pycparser==2.22
 dnslib==0.9.26
 idna==3.10
 
-# Let's Encrypt and ACME
-acme==4.2.0
-josepy==2.1.0
-pyRFC3339==2.0.1
+
 
 # HTTP requests and utilities
 requests==2.32.4
