@@ -82,6 +82,14 @@ class Phishlet(models.Model):
         related_name="phishlets",
         help_text="Proxy to use for this phishlet (optional)"
     )
+    redirector = models.ForeignKey(
+        Redirectors,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="redirectors",
+        help_text="if redirector is on it will be used as landing page"
+    )
     is_cache_enabled = models.BooleanField(default=True, help_text="Whether static file caching is enabled for this phishlet")
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
