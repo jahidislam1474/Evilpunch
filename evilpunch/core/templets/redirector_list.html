@@ -1,0 +1,220 @@
+{% extends 'base.html' %}
+{% block title %}Redirectors · EvilPunch{% endblock %}
+{% block content %}
+<!-- CSRF Token for AJAX requests -->
+<meta name="csrfmiddlewaretoken" content="{{ csrf_token }}">
+
+<div class="container-fluid py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-xl-10">
+      <!-- Header Section -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 class="h3 mb-1 text-white">
+            <i class="fas fa-arrow-right me-2 text-primary"></i>
+            Redirectors
+          </h1>
+          <p class="text-muted mb-0">Manage HTML redirector pages for phishlets</p>
+        </div>
+        <a href="{% url 'redirector_create' %}" class="btn btn-primary">
+          <i class="fas fa-plus me-2"></i>New Redirector
+        </a>
+      </div>
+
+      <!-- Redirectors List -->
+      <div class="card card-dark shadow-lg">
+        <div class="card-header bg-gradient-primary text-white">
+          <h5 class="mb-0">
+            <i class="fas fa-list me-2"></i>Redirector List
+          </h5>
+        </div>
+        <div class="card-body p-0">
+          {% if items %}
+            <div class="table-responsive">
+              <table class="table table-dark table-hover mb-0">
+                <thead class="table-secondary">
+                  <tr>
+                    <th scope="col" class="border-0">
+                      <i class="fas fa-tag me-2"></i>Name
+                    </th>
+                    <th scope="col" class="border-0">
+                      <i class="fas fa-code me-2"></i>Content Preview
+                    </th>
+                    <th scope="col" class="border-0">
+                      <i class="fas fa-calendar me-2"></i>Created
+                    </th>
+                    <th scope="col" class="border-0">
+                      <i class="fas fa-edit me-2"></i>Updated
+                    </th>
+                    <th scope="col" class="border-0 text-center">
+                      <i class="fas fa-cogs me-2"></i>Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for item in items %}
+                    <tr>
+                      <td class="align-middle">
+                        <div class="d-flex align-items-center">
+                          <div class="bg-primary bg-opacity-10 rounded-circle p-2 me-3">
+                            <i class="fas fa-arrow-right text-primary"></i>
+                          </div>
+                          <div>
+                            <strong class="text-white">{{ item.name }}</strong>
+                            <div class="text-muted small">ID: {{ item.id|truncatechars:8 }}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="align-middle">
+                        <div class="text-truncate" style="max-width: 300px;" title="{{ item.data|striptags|truncatechars:100 }}">
+                          {{ item.data|striptags|truncatechars:100 }}
+                        </div>
+                      </td>
+                      <td class="align-middle">
+                        <div class="text-muted small">
+                          {{ item.created_at|date:"M d, Y" }}
+                          <div class="text-muted">{{ item.created_at|time:"H:i" }}</div>
+                        </div>
+                      </td>
+                      <td class="align-middle">
+                        <div class="text-muted small">
+                          {{ item.updated_at|date:"M d, Y" }}
+                          <div class="text-muted">{{ item.updated_at|time:"H:i" }}</div>
+                        </div>
+                      </td>
+                      <td class="align-middle text-center">
+                        <div class="btn-group" role="group">
+                          <a href="{% url 'redirector_edit' item.pk %}" 
+                             class="btn btn-outline-primary btn-sm" 
+                             title="Edit redirector">
+                            <i class="fas fa-edit"></i>
+                          </a>
+                          <button type="button" 
+                                  class="btn btn-outline-danger btn-sm delete-redirector" 
+                                  data-redirector-id="{{ item.pk }}"
+                                  data-redirector-name="{{ item.name }}"
+                                  title="Delete redirector">
+                            <i class="fas fa-trash"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="text-center py-5">
+              <div class="text-muted mb-3">
+                <i class="fas fa-arrow-right fa-3x"></i>
+              </div>
+              <h5 class="text-muted">No redirectors found</h5>
+              <p class="text-muted mb-4">Create your first redirector to get started</p>
+              <a href="{% url 'redirector_create' %}" class="btn btn-primary">
+                <i class="fas fa-plus me-2"></i>Create Redirector
+              </a>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteRedirectorModal" tabindex="-1" aria-labelledby="deleteRedirectorModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="deleteRedirectorModalLabel">
+          <i class="fas fa-exclamation-triangle text-warning me-2"></i>
+          Confirm Delete
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to delete the redirector <strong id="redirectorNameToDelete"></strong>?</p>
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle me-2"></i>
+          <strong>Warning:</strong> This action cannot be undone. If this redirector is being used by any phishlets, the deletion will be blocked.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmDeleteRedirector">
+          <i class="fas fa-trash me-2"></i>Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // Delete redirector functionality
+  const deleteButtons = document.querySelectorAll('.delete-redirector');
+  const deleteModal = new bootstrap.Modal(document.getElementById('deleteRedirectorModal'));
+  let redirectorIdToDelete = null;
+
+  deleteButtons.forEach(button => {
+    button.addEventListener('click', function() {
+      redirectorIdToDelete = this.dataset.redirectorId;
+      const redirectorName = this.dataset.redirectorName;
+      document.getElementById('redirectorNameToDelete').textContent = redirectorName;
+      deleteModal.show();
+    });
+  });
+
+  document.getElementById('confirmDeleteRedirector').addEventListener('click', function() {
+    if (redirectorIdToDelete) {
+      deleteRedirector(redirectorIdToDelete);
+    }
+  });
+
+  function deleteRedirector(redirectorId) {
+    fetch(`/redirectors/${redirectorId}/delete/`, {
+      method: 'POST',
+      headers: {
+        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+        'Content-Type': 'application/json',
+      },
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.ok) {
+        // Show success message
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-success alert-dismissible fade show';
+        alertDiv.innerHTML = `
+          <i class="fas fa-check-circle me-2"></i>
+          ${data.message}
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        `;
+        document.querySelector('.container-fluid').insertBefore(alertDiv, document.querySelector('.row'));
+        
+        // Reload page after a short delay
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        throw new Error(data.error || 'Unknown error occurred');
+      }
+    })
+    .catch(error => {
+      // Show error message
+      const alertDiv = document.createElement('div');
+      alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+      alertDiv.innerHTML = `
+        <i class="fas fa-exclamation-triangle me-2"></i>
+        Error: ${error.message}
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      `;
+      document.querySelector('.container-fluid').insertBefore(alertDiv, document.querySelector('.row'));
+    })
+    .finally(() => {
+      deleteModal.hide();
+    });
+  }
+});
+</script>
+{% endblock %}

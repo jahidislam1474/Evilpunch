@@ -1,0 +1,327 @@
+{% extends 'base.html' %}
+{% block title %}{{ instance|default_if_none:'New' }} Redirector · EvilPunch{% endblock %}
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-xl-10">
+      <!-- Header Section -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h1 class="h3 mb-1 text-white">
+            <i class="fas fa-arrow-right me-2 text-primary"></i>
+            {{ instance|default_if_none:'Create New' }} Redirector
+          </h1>
+          <p class="text-muted mb-0">Configure HTML redirector page settings</p>
+        </div>
+        <a href="{% url 'redirector_list' %}" class="btn btn-outline-light">
+          <i class="fas fa-arrow-left me-2"></i>Back to List
+        </a>
+      </div>
+
+      <!-- Main Form Card -->
+      <div class="card card-dark shadow-lg">
+        <div class="card-header bg-gradient-primary text-white">
+          <h5 class="mb-0">
+            <i class="fas fa-cog me-2"></i>Redirector Configuration
+          </h5>
+        </div>
+        <div class="card-body p-4">
+          <form method="post" id="redirector-form">
+            {% csrf_token %}
+            
+            <!-- Name Field -->
+            <div class="form-group mb-4">
+              <label class="form-label fw-semibold text-white">
+                <i class="fas fa-tag me-2 text-primary"></i>Name
+              </label>
+              <div class="input-group">
+                <span class="input-group-text bg-dark border-secondary">
+                  <i class="fas fa-file-code text-muted"></i>
+                </span>
+                {{ form.name }}
+              </div>
+              {% if form.name.errors %}
+                <div class="invalid-feedback d-block">
+                  <i class="fas fa-exclamation-triangle me-1"></i>
+                  {{ form.name.errors.0 }}
+                </div>
+              {% endif %}
+              <div class="form-text text-muted">
+                <i class="fas fa-info-circle me-1"></i>
+                Unique identifier for the redirector (letters, numbers, hyphens, underscores only)
+              </div>
+            </div>
+
+            <!-- HTML Content Field -->
+            <div class="form-group mb-4">
+              <label class="form-label fw-semibold text-white mb-3">
+                <i class="fas fa-code me-2 text-primary"></i>HTML Content
+              </label>
+              
+              <!-- HTML Editor Container -->
+              <div class="html-editor-container">
+                <div class="mb-3">
+                  <div class="btn-group" role="group">
+                    <button type="button" id="btn-format-html" class="btn btn-outline-primary btn-sm">
+                      <i class="fas fa-magic me-1"></i>Format HTML
+                    </button>
+                    <button type="button" id="btn-preview-html" class="btn btn-outline-info btn-sm">
+                      <i class="fas fa-eye me-1"></i>Preview
+                    </button>
+                    <button type="button" id="btn-clear-html" class="btn btn-outline-warning btn-sm">
+                      <i class="fas fa-eraser me-1"></i>Clear
+                    </button>
+                  </div>
+                </div>
+                
+                {{ form.data }}
+                {% if form.data.errors %}
+                  <div class="invalid-feedback d-block mt-2">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    {{ form.data.errors.0 }}
+                  </div>
+                {% endif %}
+                
+                <div class="form-text text-muted mt-2">
+                  <i class="fas fa-info-circle me-1"></i>
+                  Enter the HTML code for your redirector page. This will be served as the landing page when a phishlet uses this redirector.
+                </div>
+              </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="d-flex gap-3 mt-5 pt-3 border-top border-secondary">
+              <button class="btn btn-primary btn-lg px-4" type="submit" id="submit-btn">
+                <i class="fas fa-save me-2"></i>
+                {% if instance %}Update{% else %}Create{% endif %} Redirector
+              </button>
+              <a href="{% url 'redirector_list' %}" class="btn btn-outline-secondary btn-lg px-4">
+                <i class="fas fa-times me-2"></i>Cancel
+              </a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- HTML Preview Modal -->
+<div class="modal fade" id="htmlPreviewModal" tabindex="-1" aria-labelledby="htmlPreviewModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="htmlPreviewModalLabel">
+          <i class="fas fa-eye me-2 text-info"></i>
+          HTML Preview
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body p-0">
+        <iframe id="htmlPreviewFrame" style="width: 100%; height: 500px; border: none;"></iframe>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const form = document.getElementById('redirector-form');
+  const nameField = document.getElementById('{{ form.name.id_for_label }}');
+  const dataField = document.getElementById('{{ form.data.id_for_label }}');
+  const formatBtn = document.getElementById('btn-format-html');
+  const previewBtn = document.getElementById('btn-preview-html');
+  const clearBtn = document.getElementById('btn-clear-html');
+  const previewModal = new bootstrap.Modal(document.getElementById('htmlPreviewModal'));
+  const previewFrame = document.getElementById('htmlPreviewFrame');
+
+  // Format HTML button
+  formatBtn.addEventListener('click', function() {
+    try {
+      const htmlContent = dataField.value;
+      if (htmlContent.trim()) {
+        // Simple HTML formatting (basic indentation)
+        const formatted = formatHTML(htmlContent);
+        dataField.value = formatted;
+        showStatus('HTML formatted successfully', 'success');
+      } else {
+        showStatus('No HTML content to format', 'warning');
+      }
+    } catch (error) {
+      showStatus('Error formatting HTML: ' + error.message, 'danger');
+    }
+  });
+
+  // Preview HTML button
+  previewBtn.addEventListener('click', function() {
+    const htmlContent = dataField.value.trim();
+    if (htmlContent) {
+      try {
+        // Create a blob URL for the HTML content
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        previewFrame.src = url;
+        previewModal.show();
+        
+        // Clean up the blob URL when modal is hidden
+        previewModal._element.addEventListener('hidden.bs.modal', function() {
+          URL.revokeObjectURL(url);
+        }, { once: true });
+      } catch (error) {
+        showStatus('Error previewing HTML: ' + error.message, 'danger');
+      }
+    } else {
+      showStatus('No HTML content to preview', 'warning');
+    }
+  });
+
+  // Clear HTML button
+  clearBtn.addEventListener('click', function() {
+    if (confirm('Are you sure you want to clear all HTML content? This action cannot be undone.')) {
+      dataField.value = '';
+      showStatus('HTML content cleared', 'info');
+    }
+  });
+
+  // Form validation
+  form.addEventListener('submit', function(e) {
+    const name = nameField.value.trim();
+    const data = dataField.value.trim();
+    
+    if (!name) {
+      e.preventDefault();
+      showStatus('Please enter a redirector name', 'danger');
+      nameField.focus();
+      return;
+    }
+    
+    if (!data) {
+      e.preventDefault();
+      showStatus('Please enter HTML content', 'danger');
+      dataField.focus();
+      return;
+    }
+    
+    if (data.length < 10) {
+      e.preventDefault();
+      showStatus('HTML content must be at least 10 characters long', 'danger');
+      dataField.focus();
+      return;
+    }
+  });
+
+  // Helper functions
+  function formatHTML(html) {
+    // Basic HTML formatting with indentation
+    let formatted = html;
+    
+    // Add line breaks before tags
+    formatted = formatted.replace(/>/g, '>\n');
+    formatted = formatted.replace(/</g, '\n<');
+    
+    // Remove empty lines and normalize spacing
+    formatted = formatted.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .join('\n');
+    
+    // Add basic indentation
+    let indent = 0;
+    const lines = formatted.split('\n');
+    const formattedLines = lines.map(line => {
+      if (line.match(/^<\//)) {
+        indent = Math.max(0, indent - 1);
+      }
+      const result = '  '.repeat(indent) + line;
+      if (line.match(/^<[^/!]/) && !line.match(/\/>/)) {
+        indent++;
+      }
+      return result;
+    });
+    
+    return formattedLines.join('\n');
+  }
+
+  function showStatus(message, type) {
+    // Remove existing status messages
+    const existingStatus = document.querySelector('.status-message');
+    if (existingStatus) {
+      existingStatus.remove();
+    }
+    
+    // Create new status message
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `alert alert-${type} alert-dismissible fade show status-message mt-3`;
+    statusDiv.innerHTML = `
+      <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'warning' ? 'exclamation-triangle' : type === 'danger' ? 'exclamation-circle' : 'info-circle'} me-2"></i>
+      ${message}
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+    `;
+    
+    // Insert after the form
+    form.parentNode.insertBefore(statusDiv, form.nextSibling);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      if (statusDiv.parentNode) {
+        statusDiv.remove();
+      }
+    }, 5000);
+  }
+
+  // Auto-resize textarea
+  dataField.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.max(400, this.scrollHeight) + 'px';
+  });
+  
+  // Initial resize
+  dataField.dispatchEvent(new Event('input'));
+});
+</script>
+
+<style>
+.html-editor-container {
+  background-color: #0e1430;
+  border: 1px solid #293056;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+#{{ form.data.id_for_label }} {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  background-color: #0a0e1a;
+  color: #e9ecf5;
+  border: 1px solid #293056;
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 400px;
+}
+
+#{{ form.data.id_for_label }}:focus {
+  background-color: #0a0e1a;
+  color: #fff;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 .25rem rgba(67,97,238,.25);
+}
+
+.btn-group .btn {
+  border-radius: 6px;
+  margin-right: 5px;
+}
+
+.btn-group .btn:last-child {
+  margin-right: 0;
+}
+
+.status-message {
+  position: relative;
+  z-index: 1000;
+}
+</style>
+{% endblock %}
