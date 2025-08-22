@@ -16,6 +16,11 @@ urlpatterns = [
     path('phishlets/<uuid:pk>/toggle-cache/', views.phishlet_toggle_cache_view, name='phishlet_toggle_cache'),
     path('phishlets/<uuid:pk>/clear-cache/', views.phishlet_clear_cache_view, name='phishlet_clear_cache'),
     path('phishlets/<uuid:pk>/local-hosts/', views.phishlet_get_local_hosts_view, name='phishlet_get_local_hosts'),
+    # Redirector management
+    path('redirectors/', views.redirector_list_view, name='redirector_list'),
+    path('redirectors/new/', views.redirector_create_view, name='redirector_create'),
+    path('redirectors/<uuid:pk>/edit/', views.redirector_edit_view, name='redirector_edit'),
+    path('redirectors/<uuid:pk>/delete/', views.redirector_delete_view, name='redirector_delete'),
     # Proxy management
     path('proxies/', views.proxy_list_view, name='proxy_list'),
     path('proxies/new/', views.proxy_create_view, name='proxy_create'),

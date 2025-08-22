@@ -46,6 +46,7 @@
             <th>Name</th>
             <th>Proxy Auth</th>
             <th>Proxy Server</th>
+            <th>Redirector</th>
             <th>Active</th>
             <th>Cache</th>
             <th>Updated</th>
@@ -98,6 +99,20 @@
               {% endif %}
             </td>
             <td>
+              {% if p.redirector %}
+                <div class="d-flex align-items-center">
+                  <i class="fas fa-arrow-right me-2 text-success"></i>
+                  <div>
+                    <strong>{{ p.redirector.name }}</strong>
+                    <br>
+                    <small class="text-muted">Landing page</small>
+                  </div>
+                </div>
+              {% else %}
+                <span class="text-muted">None</span>
+              {% endif %}
+            </td>
+            <td>
               {% if p.is_active %}
                 <span class="badge text-bg-success">Yes</span>
               {% else %}
@@ -137,7 +152,7 @@
           </tr>
           {% empty %}
           <tr>
-            <td colspan="6" class="text-center text-secondary py-4">No phishlets yet.</td>
+            <td colspan="7" class="text-center text-secondary py-4">No phishlets yet.</td>
           </tr>
           {% endfor %}
         </tbody>

