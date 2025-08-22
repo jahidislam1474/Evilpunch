@@ -50,6 +50,24 @@ class Proxy(models.Model):
             raise ValidationError({"port": "Port must be between 1 and 65535."})
 
 
+
+class Redirectors(models.Model):
+    """
+    will be used to ave html pages ( html page called redirector)
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=150, unique=True, help_text="Unique identifier, used as filename.")
+    data = models.TextField(help_text="HTML code for the redirector")
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:  # noqa: D401
+        return self.name
+
+
 class Phishlet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.SlugField(max_length=150, unique=True, help_text="Unique identifier, used as filename.")
@@ -73,6 +91,9 @@ class Phishlet(models.Model):
 
     def __str__(self) -> str:  # noqa: D401
         return self.name
+
+
+
 
 
 class DNSSettings(models.Model):
