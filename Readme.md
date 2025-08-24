@@ -1,13 +1,20 @@
+# <div align="center"><span style="color: red;">⚠️ WARNING: Phishing is illegal ⚠️</span></div>
+
+
+
+
+
 <p align="center">
   <img src="evilpunch/public/static/images/evilpunch.png" alt="EvilPunch Logo" width="180" />
 </p>
 
-### EvilPunch — Offensive Reverse Proxy.
+### <div align="center">EvilPunch — Offensive Reverse Proxy</div>
 
 <p align="center">
   <a href="https://www.djangoproject.com/" target="_blank"><img alt="Built with Django" src="https://img.shields.io/badge/built%20with-Django-0C4B33?logo=django&logoColor=white"></a>
   <a href="https://python.org" target="_blank"><img alt="Python" src="https://img.shields.io/badge/python-3.x-3776AB?logo=python&logoColor=white"></a>
   <a href="https://youtu.be/N5iu_X73hy0" target="_blank"><img alt="Demo" src="https://img.shields.io/badge/watch-demo-FF0000?logo=youtube&logoColor=white"></a>
+  <a href="https://t.me/fluxxset" target="_blank"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-Community-0088CC?logo=telegram&logoColor=white"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-active-success">
   
 </p>
@@ -23,25 +30,44 @@
 - [Legal & Ethical Notice](#legal--ethical-notice)
 - [License & Permissions](#license--permissions)
 
-## Demo
+## <div align="center">🎓 Evilpunch Video Training Course 🚀</div>
+
+<div align="center">
+
+![Evilpunch Course Banner](evilpunch/public/static/images/banner.png)
+
+**Master the Evilpunch platform with our comprehensive video training course!**
+
+[![View Course](https://img.shields.io/badge/View%20Course-View%20Now-blue?style=for-the-badge&logo=play-circle)](https://fourthwall.fluxxset.com/products/evilpunch-video-training-course)
+
+</div>
+
+## <div align="center">🎬 Demo & Showcase</div>
+
+<div align="center">
 
 - **Watch the demo**: [YouTube — EvilPunch Demo](https://youtu.be/N5iu_X73hy0)
 
 <a href="https://youtu.be/N5iu_X73hy0" target="_blank">
   <img src="https://img.youtube.com/vi/N5iu_X73hy0/hqdefault.jpg" alt="EvilPunch Demo Video" width="640" />
-  
- </a>
+</a>
 
-## Features
+</div>
 
-- **Web dashboard**: Admin login ensured from `config.json`.
-- **Config-driven**: Set host, port, and credentials in `evilpunch/config/config.json`.
-- **One-liner start**: `./run.sh` handles env, deps, migrate, and run.
-- **Django 5**: Modern framework, SQLite by default, easy to extend.
-- **Static assets**: Bundled images and styles via `public/static`.
+## ✨ Features
+
+- **🌐 Web dashboard**: Admin login ensured from `config.json`.
+- **🔗 Option to use multiple domains**: Support for managing and deploying across multiple domain configurations.
+- **🔄 Options to use proxies**: Flexible proxy configuration and management.
+- **➡️ Redirectors can be used**: Advanced redirector system for enhanced phishing campaigns.
+- **⚡ Caching mechanism for phishlet**: Optimized performance with intelligent caching.
+- **📱 Telegram reporting alert system**: Real-time notifications and alerts via Telegram.
+- **🔍 Session filters**: Advanced filtering and management of captured sessions.
+
+- **🚀 And much more**: Extensive features for comprehensive phishing simulation.
 ## Run the Dashboard
 
-### Quick start (one command)
+### 🚀 Quick start (one command)
 
 ```bash
 chmod +x run.sh && ./run.sh -d # for devloper mode
@@ -57,7 +83,7 @@ This will:
 - Run database migrations
 - Start the Django server using the configured host/port
 
-### Manual setup
+### 🔧 Manual setup
 
 ```bash
 # 1) Create and activate a virtual environment
@@ -73,7 +99,7 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-### Configure host, port, and admin login
+### ⚙️ Configure host, port, and admin login
 
 - Edit `evilpunch/config/config.json`:
   - `dashboard_host` (default `0.0.0.0`) and `dashboard_port` (default `9000`)
@@ -81,20 +107,20 @@ python manage.py runserver
 - On startup, these credentials are ensured for an admin user.
 - To use a different config path, set `REVERSE_PROXY_CONFIG_PATH` or `CONFIG_PATH`.
 
-### Access the dashboard
+### 🚪 Access the dashboard
 
 - Local: `http://localhost:9000`
 - Remote/LAN: `http://<server-ip-or-hostname>:9000` (open the port in your firewall)
 - Log in with the credentials from `config.json` (default `admin` / `admin`). Change them immediately.
 
-### Notes
+### 📝 Notes
 
 - The development server binds to the host/port from `evilpunch/config/config.json`.
 - If exposing beyond localhost, set `ALLOWED_HOSTS` in `evilpunch/evilpunch/settings.py` for production use.
 
 
 
-## Community & Resources
+## 🌐 Community & Resources
 
 Everything you need to get the most from EvilPunch — tutorials, docs, tools, courses, and community — all in one place.
 
@@ -110,36 +136,36 @@ Quick links:
 - **Visit Forum**: [fluxxset.com](https://fluxxset.com/)
 - **Join Telegram**: [t.me/fluxxset](https://t.me/fluxxset)
 
-## Legal & Ethical Notice
+## ⚖️ Legal & Ethical Notice
 
 This project, including all associated modules, scripts, and user interfaces, is provided strictly for legitimate security testing and educational purposes by authorized professionals. Unauthorized use may be illegal and could lead to criminal and civil penalties.
 
 **Phishing is illegal without explicit permission.** You must have written authorization (e.g., contract, letter of engagement, or signed scope) from the system owner before performing any testing.
 
-### Intended Audience
+### 👥 Intended Audience
 
 - Red teamers and penetration testers working under a valid Statement of Work.
 - Blue teamers and defenders conducting adversary emulation in controlled environments.
 - Security researchers and educators in lab settings with consent.
 
-### You Agree To
+### ✅ You Agree To
 
 - Use this tool only with explicit, written authorization from asset owners.
 - Comply with all applicable laws and regulations in your jurisdiction.
 - Protect captured data and handle it according to your engagement’s confidentiality rules.
 - Avoid targeting uninvolved third parties or production environments without scope approval.
 
-### Data Handling
+### 🔒 Data Handling
 
 - Minimize data collection to what is necessary for the engagement.
 - Store sensitive data securely and encrypt it at rest and in transit when possible.
 - Purge data promptly at the end of an engagement or per contractual obligations.
 
-### Disclaimer
+### ⚠️ Disclaimer
 
 The authors and contributors are not responsible for any misuse or damage caused by this software. Using this project implies that you understand and accept these terms and will use it responsibly and lawfully.
 
-## License & Permissions
+## 📄 License & Permissions
 
 You indicated you want a license that allows free use but requires permission for modifications and for organizational/commercial use. The following placeholder reflects that intent. Feel free to replace or refine this section with your final license text.
 
