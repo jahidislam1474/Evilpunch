@@ -30,11 +30,11 @@
 - [Legal & Ethical Notice](#legal--ethical-notice)
 - [License & Permissions](#license--permissions)
 
+-------
 ## <div align="center">🎓 Evilpunch Video Training Course 🚀</div>
 
 <div align="center">
-
-![Evilpunch Course Banner](evilpunch/public/static/images/banner.png)
+<img src="evilpunch/public/static/images/banner.png" alt="Evilpunch Course Banner" style="width: 400px; height: auto; max-width: 100%; display: block; margin: 0 auto;">
 
 **Master the Evilpunch platform with our comprehensive video training course!**
 
