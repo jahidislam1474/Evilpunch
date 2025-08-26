@@ -227,7 +227,7 @@ setup_venv() {
 # Function to start development server
 start_development_server() {
     echo "Starting Django development server..."
-    cd evilpunch && python manage.py migrate && python manage.py ensure_admin_user && python manage.py runserver
+    cd evilpunch && python3 manage.py migrate && python3 manage.py ensure_admin_user && python3 manage.py runserver
 }
 
 # Function to start production server
