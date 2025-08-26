@@ -9,6 +9,9 @@ import logging
 import traceback
 import hashlib
 import mimetypes
+import multiprocessing
+import signal
+from multiprocessing import Process, Pool, Manager, cpu_count
 # errno is not needed; we detect EADDRINUSE via message patterns
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -41,6 +44,19 @@ FALLBACK_HTTP_PORT = int(os.getenv("PROXY_FALLBACK_PORT", "8080"))
 # Debug configuration
 DEBUG_MODE = os.getenv("PROXY_DEBUG", "true").lower() == "true"
 DEBUG_LEVEL = os.getenv("PROXY_DEBUG_LEVEL", "INFO").upper()
+
+# --- MULTIPROCESSING CONFIGURATION ---
+# Number of worker processes for multiprocessing
+# Can be controlled via environment variable PROXY_WORKER_PROCESSES
+# Default: Use all available CPU cores, minimum 2, maximum 8
+DEFAULT_WORKER_PROCESSES = min(max(cpu_count(), 2), 8)
+WORKER_PROCESSES = int(os.getenv("PROXY_WORKER_PROCESSES", str(DEFAULT_WORKER_PROCESSES)))
+
+# Multiprocessing mode: 'process' for true multiprocessing, 'thread' for threading
+MULTIPROCESSING_MODE = os.getenv("PROXY_MULTIPROCESSING_MODE", "process").lower()
+
+# Enable/disable multiprocessing (enabled by default for better performance)
+MULTIPROCESSING_ENABLED = os.getenv("PROXY_MULTIPROCESSING_ENABLED", "true").lower() == "true"
 
 # --- STATIC FILE CACHING ---
 # Cache configuration can be controlled via environment variables:
@@ -498,6 +514,12 @@ _site: Optional[web.TCPSite] = None
 _stop_event: Optional[threading.Event] = None
 _status: Dict[str, Any] = {"running": False, "port": None, "error": None, "scheme": None}
 
+# --- MULTIPROCESSING STATE ---
+_worker_processes: List[Process] = []
+_worker_pool: Optional[Pool] = None
+_process_manager: Optional[Manager] = None
+_shared_status: Optional[Dict[str, Any]] = None
+
 # --- Dynamic multi-host routing state ---
 # proxy hostname (served by us) -> target hostname (origin)
 _routing_table: Dict[str, str] = {}
@@ -511,6 +533,113 @@ _sni_contexts: Dict[str, ssl.SSLContext] = {}
 
 # Directory where we materialize PEM files from DB to feed ssl.load_cert_chain
 _runtime_cert_dir: Optional[Path] = None
+
+# --- MULTIPROCESSING HELPERS ---
+def _setup_multiprocessing():
+    """Setup multiprocessing environment and signal handlers"""
+    # Set multiprocessing start method (only in main process)
+    if multiprocessing.current_process().name == 'MainProcess':
+        if hasattr(multiprocessing, 'set_start_method'):
+            try:
+                multiprocessing.set_start_method('spawn', force=True)
+                debug_log("Set multiprocessing start method to 'spawn'", "INFO")
+            except RuntimeError:
+                debug_log("Multiprocessing start method already set", "DEBUG")
+        
+        # Setup signal handlers for graceful shutdown (only in main process)
+        try:
+            def signal_handler(signum, frame):
+                debug_log(f"Received signal {signum}, shutting down gracefully", "INFO")
+                stop_proxy_server()
+                os._exit(0)
+            
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            debug_log("Signal handlers configured for graceful shutdown", "INFO")
+        except ValueError as e:
+            # Signal handlers can only be set in the main thread
+            debug_log(f"Could not set signal handlers (not in main thread): {e}", "WARN")
+            debug_log("Signal handling will be limited in this context", "INFO")
+    else:
+        debug_log("Not in main process, skipping signal handler setup", "DEBUG")
+
+def _worker_target(worker_id: int, port: int, use_ssl: bool, stop_event):
+    """Worker process target function (must be at module level for multiprocessing)"""
+    try:
+        debug_log(f"Worker process {worker_id} starting on port {port}", "INFO")
+        
+        # Create new event loop for this process
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Worker processes just wait for requests to be distributed to them
+        # They don't bind to ports - the main process handles that
+        debug_log(f"Worker {worker_id}: Ready to handle requests (SSL: {use_ssl})", "INFO")
+        
+        # Wait for stop signal
+        while not stop_event.is_set():
+            loop.run_until_complete(asyncio.sleep(0.1))
+            
+    except Exception as e:
+        debug_log(f"Worker process {worker_id} error: {e}", "ERROR")
+        debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+    finally:
+        try:
+            loop.close()
+        except Exception as e:
+            debug_log(f"Error closing loop in worker {worker_id}: {e}", "WARN")
+        debug_log(f"Worker process {worker_id} exiting", "INFO")
+
+def _create_worker_process(worker_id: int, port: int, ssl_context, stop_event) -> Process:
+    """Create a single worker process for the proxy server"""
+    # Convert SSLContext to boolean flag to avoid pickling issues
+    use_ssl = ssl_context is not None
+    
+    process = Process(
+        target=_worker_target,
+        args=(worker_id, port, use_ssl, stop_event),
+        name=f'proxy-worker-{worker_id}',
+        daemon=True
+    )
+    return process
+
+async def _run_worker_server(worker_id: int, port: int, ssl_context, stop_event):
+    """Run a single worker server instance"""
+    debug_log(f"Worker {worker_id}: Starting server on port {port}", "INFO")
+    
+    app = web.Application()
+    
+    # Add routes for this worker
+    app.router.add_route('GET', '/_cache/config', cache_config_handler)
+    app.router.add_route('GET', '/_cache/stats', cache_stats_handler)
+    app.router.add_route('GET', '/_cache/directory', cache_directory_handler)
+    app.router.add_route('POST', '/_cache/clear', cache_clear_handler)
+    app.router.add_route('POST', '/_cache/cleanup', cache_cleanup_handler)
+    app.router.add_route('GET', '/_multiprocessing/stats', multiprocessing_stats_handler)
+    app.router.add_route('GET', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+    app.router.add_route('OPTIONS', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+    app.router.add_route('*', '/{path:.*}', proxy_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    try:
+        site = web.TCPSite(runner, '0.0.0.0', port, ssl_context=ssl_context)
+        await site.start()
+        debug_log(f"Worker {worker_id}: Server started successfully on port {port}", "INFO")
+        
+        # Wait for stop signal
+        while not stop_event.is_set():
+            await asyncio.sleep(0.1)
+            
+    except Exception as e:
+        debug_log(f"Worker {worker_id}: Error running server: {e}", "ERROR")
+    finally:
+        try:
+            await runner.cleanup()
+            debug_log(f"Worker {worker_id}: Server cleanup complete", "INFO")
+        except Exception as e:
+            debug_log(f"Worker {worker_id}: Error during cleanup: {e}", "ERROR")
 
 # --- SESSION MANAGEMENT ---
 def generate_session_id() -> str:
@@ -1858,6 +1987,18 @@ async def cache_cleanup_handler(request):
         debug_log(f"Error in manual cache cleanup: {e}", "ERROR")
         return web.json_response({"error": str(e)}, status=500)
 
+async def multiprocessing_stats_handler(request):
+    """
+    Handler for multiprocessing statistics endpoint.
+    Returns JSON with multiprocessing statistics.
+    """
+    try:
+        stats = get_multiprocessing_stats()
+        return web.json_response(stats)
+    except Exception as e:
+        debug_log(f"Error getting multiprocessing stats: {e}", "ERROR")
+        return web.json_response({"error": str(e)}, status=500)
+
 async def proxy_handler(request):
     debug_log("=== PROXY REQUEST HANDLER ===", "DEBUG")
     debug_log(f"Request method: {request.method}", "DEBUG")
@@ -2161,6 +2302,7 @@ async def proxy_handler(request):
     debug_log("Preparing HTTP proxy request...", "DEBUG")
     # Pass phishlet data for proper reverse filter header replacement
     phishlet_data_for_headers = matching_phishlet.get('data') if matching_phishlet else None
+    debug_log(f"request.headers: {request.headers}", "DEBUG")
     forward_headers = patch_headers_out(request.headers, incoming_host, target_host, phishlet_data_for_headers)
     target_url = f"https://{target_host}{request.rel_url}"
     debug_log(f"Target URL: {target_url}", "DEBUG")
@@ -2978,10 +3120,200 @@ async def _build_ssl_context():
 
 
 async def _start_and_wait(stop_event: threading.Event, *, port: int) -> None:
-    global _runner, _site, _status
+    global _runner, _site, _status, _worker_processes, _worker_pool, _process_manager, _shared_status
     
     debug_log("=== STARTING PROXY SERVER ===", "INFO")
     debug_log(f"Target port: {port}", "INFO")
+    
+    # Check if multiprocessing is enabled
+    if MULTIPROCESSING_ENABLED and MULTIPROCESSING_MODE == 'process':
+        debug_log(f"Starting multiprocessing mode with {WORKER_PROCESSES} worker processes", "INFO")
+        # Create a multiprocessing Event for worker processes
+        mp_stop_event = multiprocessing.Event()
+        # Set the multiprocessing event when the threading event is set
+        def sync_events():
+            while not stop_event.is_set():
+                if mp_stop_event.is_set():
+                    break
+                time.sleep(0.1)
+            if stop_event.is_set():
+                mp_stop_event.set()
+        
+        # Start the sync thread
+        sync_thread = threading.Thread(target=sync_events, daemon=True)
+        sync_thread.start()
+        
+        await _start_multiprocessing_server(mp_stop_event, port)
+        return
+    
+    debug_log("Starting single-threaded mode", "INFO")
+    await _start_single_threaded_server(stop_event, port)
+
+async def _start_multiprocessing_server(stop_event, port: int) -> None:
+    """Start the proxy server using multiple worker processes"""
+    global _worker_processes, _process_manager, _shared_status
+    
+    debug_log("=== STARTING MULTIPROCESSING PROXY SERVER ===", "INFO")
+    
+    # Setup multiprocessing environment (only if we're in the main process)
+    if multiprocessing.current_process().name == 'MainProcess':
+        _setup_multiprocessing()
+    else:
+        debug_log("Not in main process, skipping multiprocessing setup", "DEBUG")
+    
+    # Create process manager for shared state (only in main process)
+    if multiprocessing.current_process().name == 'MainProcess':
+        _process_manager = Manager()
+        _shared_status = _process_manager.dict()
+        _shared_status.update({"running": True, "port": port, "error": None, "scheme": None})
+    else:
+        debug_log("Not in main process, using existing shared state", "DEBUG")
+        _shared_status = None
+    
+    # Start cache cleanup task in main process
+    if CACHE_ENABLED and multiprocessing.current_process().name == 'MainProcess':
+        debug_log("Starting cache cleanup task in main process...", "INFO")
+        
+        async def cache_cleanup_task():
+            while not stop_event.is_set():
+                try:
+                    await asyncio.sleep(3600)  # Run every hour
+                    if not stop_event.is_set():
+                        debug_log("Running periodic cache cleanup...", "DEBUG")
+                        await asyncio.to_thread(_cleanup_cache)
+                except Exception as e:
+                    debug_log(f"Error in cache cleanup task: {e}", "ERROR")
+        
+        cleanup_task = asyncio.create_task(cache_cleanup_task())
+        debug_log("✅ Cache cleanup task started in main process", "INFO")
+    elif CACHE_ENABLED:
+        debug_log("Cache cleanup disabled in worker process", "DEBUG")
+    
+    # Build SSL context
+    ssl_context = await _build_ssl_context()
+    port_to_use = port
+    
+    if ssl_context is None and port_to_use < 1024:
+        debug_log(f"Port {port_to_use} requires elevated privileges; using {FALLBACK_HTTP_PORT} for HTTP.", "WARN")
+        port_to_use = FALLBACK_HTTP_PORT
+    
+    scheme = 'HTTPS' if ssl_context else 'HTTP'
+    if _shared_status:
+        _shared_status.update({"scheme": scheme, "port": port_to_use})
+    else:
+        debug_log("No shared status available, skipping update", "DEBUG")
+    
+    # In multiprocessing mode, we start the main server in the main process
+    # and create worker processes that will handle requests
+    if multiprocessing.current_process().name == 'MainProcess':
+        debug_log("Starting main server process...", "INFO")
+        
+        # Start the main server (this will bind to the port)
+        app = web.Application()
+        
+        # Add routes for the main server
+        app.router.add_route('GET', '/_cache/config', cache_config_handler)
+        app.router.add_route('GET', '/_cache/stats', cache_stats_handler)
+        app.router.add_route('GET', '/_cache/directory', cache_directory_handler)
+        app.router.add_route('POST', '/_cache/clear', cache_clear_handler)
+        app.router.add_route('POST', '/_cache/cleanup', cache_cleanup_handler)
+        app.router.add_route('GET', '/_multiprocessing/stats', multiprocessing_stats_handler)
+        app.router.add_route('GET', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+        app.router.add_route('OPTIONS', '/_temp_js/{endpoint_id:[a-zA-Z0-9_-]+}', temp_js_handler)
+        app.router.add_route('*', '/{path:.*}', proxy_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        try:
+            site = web.TCPSite(runner, '0.0.0.0', port_to_use, ssl_context=ssl_context)
+            await site.start()
+            debug_log(f"✓ Main server started successfully on port {port_to_use}", "INFO")
+            
+            # Now create worker processes for request handling
+            debug_log(f"Creating {WORKER_PROCESSES} worker processes for request handling...", "INFO")
+            _worker_processes = []
+            
+            for i in range(WORKER_PROCESSES):
+                worker = _create_worker_process(i + 1, port_to_use, ssl_context, stop_event)
+                _worker_processes.append(worker)
+                worker.start()
+                debug_log(f"✅ Worker process {i + 1} started (PID: {worker.pid})", "INFO")
+            
+            debug_log(f"================================================", "INFO")
+            debug_log(f"✓ {scheme} multiprocessing proxy running on 0.0.0.0:{port_to_use}", "INFO")
+            debug_log(f"✓ {len(_worker_processes)} worker processes active", "INFO")
+            debug_log(f"================================================", "INFO")
+            
+            # Wait for stop signal
+            try:
+                loop = asyncio.get_running_loop()
+                debug_log("Waiting for stop signal...", "INFO")
+                await loop.run_in_executor(None, stop_event.wait)
+                debug_log("Stop signal received", "INFO")
+            finally:
+                await runner.cleanup()
+                await _cleanup_multiprocessing_server()
+                
+        except Exception as e:
+            debug_log(f"Error starting main server: {e}", "ERROR")
+            await runner.cleanup()
+            raise
+    else:
+        debug_log("Not in main process, skipping server startup", "DEBUG")
+        _worker_processes = []
+
+async def _cleanup_multiprocessing_server():
+    """Cleanup multiprocessing server resources"""
+    global _worker_processes, _process_manager, _shared_status
+    
+    debug_log("Cleaning up multiprocessing server...", "INFO")
+    
+    # Terminate all worker processes (only if we have any)
+    if _worker_processes:
+        debug_log(f"Terminating {len(_worker_processes)} worker processes...", "INFO")
+        for i, worker in enumerate(_worker_processes):
+            try:
+                if worker.is_alive():
+                    debug_log(f"Terminating worker {i + 1} (PID: {worker.pid})", "DEBUG")
+                    worker.terminate()
+                    worker.join(timeout=2.0)
+                    
+                    if worker.is_alive():
+                        debug_log(f"Force killing worker {i + 1} (PID: {worker.pid})", "WARN")
+                        worker.kill()
+                        worker.join(timeout=1.0)
+                    
+                    debug_log(f"Worker {i + 1} terminated", "INFO")
+                else:
+                    debug_log(f"Worker {i + 1} already terminated", "DEBUG")
+            except Exception as e:
+                debug_log(f"Error terminating worker {i + 1}: {e}", "ERROR")
+        
+        _worker_processes.clear()
+        debug_log("All worker processes terminated", "INFO")
+    else:
+        debug_log("No worker processes to terminate", "DEBUG")
+    
+    # Cleanup process manager (only in main process)
+    if _process_manager and multiprocessing.current_process().name == 'MainProcess':
+        try:
+            _process_manager.shutdown()
+            debug_log("Process manager shutdown complete", "INFO")
+        except Exception as e:
+            debug_log(f"Error shutting down process manager: {e}", "ERROR")
+        _process_manager = None
+        _shared_status = None
+    else:
+        debug_log("Process manager cleanup skipped (not in main process)", "DEBUG")
+    
+    debug_log("Multiprocessing server cleanup complete", "INFO")
+
+async def _start_single_threaded_server(stop_event: threading.Event, port: int) -> None:
+    """Start the proxy server using single-threaded mode (original implementation)"""
+    global _runner, _site, _status
+    
+    debug_log("=== STARTING SINGLE-THREADED PROXY SERVER ===", "INFO")
     
     # Start cache cleanup task
     if CACHE_ENABLED:
@@ -3017,6 +3349,10 @@ async def _start_and_wait(stop_event: threading.Event, *, port: int) -> None:
     app.router.add_route('POST', '/_cache/clear', cache_clear_handler)
     app.router.add_route('POST', '/_cache/cleanup', cache_cleanup_handler)
     debug_log("✅ Cache management routes registered: GET,POST /_cache/*", "INFO")
+    
+    # Add route for multiprocessing statistics
+    app.router.add_route('GET', '/_multiprocessing/stats', multiprocessing_stats_handler)
+    debug_log("✅ Multiprocessing stats route registered: GET /_multiprocessing/stats", "INFO")
     
     # Add route for temporary JavaScript endpoints (MUST be before catch-all)
     # Use more specific pattern to avoid conflicts
@@ -3147,7 +3483,7 @@ def start_proxy_server(port: Optional[int] = None,
                        proxy_host: Optional[str] = None,
                        cert_file: Optional[str] = None,
                        key_file: Optional[str] = None) -> Dict[str, Any]:
-    global _server_thread, _loop, _stop_event, TARGET_HOST, PROXY_HOST, PROXY_PORT, CERT_FILE, KEY_FILE
+    global _server_thread, _loop, _stop_event, TARGET_HOST, PROXY_HOST, PROXY_PORT, CERT_FILE, KEY_FILE, _worker_processes, _process_manager, _shared_status
     
     debug_log("=== STARTING PROXY SERVER ===", "INFO")
     debug_log(f"Requested port: {port}", "DEBUG")
@@ -3175,12 +3511,19 @@ def start_proxy_server(port: Optional[int] = None,
         PROXY_PORT = int(port)
         debug_log(f"Set PROXY_PORT to: {PROXY_PORT}", "INFO")
 
-    if _server_thread and _server_thread.is_alive():
+    # Check if proxy is already running (either single-threaded or multiprocessing)
+    if (_server_thread and _server_thread.is_alive()) or (_worker_processes and any(p.is_alive() for p in _worker_processes)):
         debug_log("Proxy already running, returning current status", "WARN")
         return {"ok": True, "message": "Proxy already running.", "status": get_proxy_status()}
 
     debug_log("Creating stop event and server thread", "DEBUG")
     _stop_event = threading.Event()
+    
+    # Log multiprocessing configuration
+    if MULTIPROCESSING_ENABLED:
+        debug_log(f"Multiprocessing enabled: {MULTIPROCESSING_MODE} mode with {WORKER_PROCESSES} workers", "INFO")
+    else:
+        debug_log("Multiprocessing disabled, using single-threaded mode", "INFO")
 
     def _thread_target():
         global _loop
@@ -3219,11 +3562,14 @@ def start_proxy_server(port: Optional[int] = None,
 
 
 def stop_proxy_server() -> Dict[str, Any]:
-    global _stop_event, _server_thread
+    global _stop_event, _server_thread, _worker_processes, _process_manager, _shared_status
     
     debug_log("=== STOPPING PROXY SERVER ===", "INFO")
     
-    if not (_server_thread and _server_thread.is_alive()):
+    # Check if proxy is running (either single-threaded or multiprocessing)
+    is_running = (_server_thread and _server_thread.is_alive()) or (_worker_processes and any(p.is_alive() for p in _worker_processes))
+    
+    if not is_running:
         debug_log("Proxy not running, nothing to stop", "WARN")
         return {"ok": True, "message": "Proxy not running.", "status": get_proxy_status()}
     
@@ -3231,13 +3577,22 @@ def stop_proxy_server() -> Dict[str, Any]:
     if _stop_event:
         _stop_event.set()
     
-    debug_log("Waiting for server thread to join (timeout: 3s)", "INFO")
-    _server_thread.join(timeout=3.0)
+    # Stop multiprocessing workers if running (only in main process)
+    if _worker_processes and any(p.is_alive() for p in _worker_processes) and multiprocessing.current_process().name == 'MainProcess':
+        debug_log("Stopping multiprocessing workers...", "INFO")
+        asyncio.run(_cleanup_multiprocessing_server())
+    elif _worker_processes and any(p.is_alive() for p in _worker_processes):
+        debug_log("Multiprocessing workers running but not in main process, skipping cleanup", "WARN")
     
-    if _server_thread.is_alive():
-        debug_log("Server thread did not stop within timeout", "WARN")
-    else:
-        debug_log("Server thread stopped successfully", "INFO")
+    # Stop single-threaded server if running
+    if _server_thread and _server_thread.is_alive():
+        debug_log("Waiting for server thread to join (timeout: 3s)", "INFO")
+        _server_thread.join(timeout=3.0)
+        
+        if _server_thread.is_alive():
+            debug_log("Server thread did not stop within timeout", "WARN")
+        else:
+            debug_log("Server thread stopped successfully", "INFO")
     
     status = get_proxy_status()
     debug_log(f"Stop complete. Final status: {status}", "INFO")
@@ -3269,10 +3624,99 @@ def restart_proxy_server(port: Optional[int] = None) -> Dict[str, Any]:
 
 
 def get_proxy_status() -> Dict[str, Any]:
-    return {"running": bool(_server_thread and _server_thread.is_alive() and _status.get("running")),
+    # Check if multiprocessing workers are running
+    multiprocessing_running = bool(_worker_processes and any(p.is_alive() for p in _worker_processes))
+    
+    # Check if single-threaded server is running
+    single_threaded_running = bool(_server_thread and _server_thread.is_alive() and _status.get("running"))
+    
+    # Determine which status to use
+    if multiprocessing_running and _shared_status:
+        return {
+            "running": True,
+            "port": _shared_status.get("port") or PROXY_PORT,
+            "scheme": _shared_status.get("scheme") or ("HTTPS" if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE) else "HTTP"),
+            "error": _shared_status.get("error"),
+            "mode": "multiprocessing",
+            "worker_count": len(_worker_processes) if _worker_processes else 0,
+            "active_workers": sum(1 for p in _worker_processes if p.is_alive()) if _worker_processes else 0
+        }
+    elif single_threaded_running:
+        return {
+            "running": True,
             "port": _status.get("port") or PROXY_PORT,
             "scheme": _status.get("scheme") or ("HTTPS" if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE) else "HTTP"),
-            "error": _status.get("error")}
+            "error": _status.get("error"),
+            "mode": "single-threaded",
+            "worker_count": 1,
+            "active_workers": 1
+        }
+    else:
+        # Check if we're in a worker process
+        if multiprocessing.current_process().name != 'MainProcess':
+            return {
+                "running": True,
+                "port": PROXY_PORT,
+                "scheme": "HTTPS" if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE) else "HTTP",
+                "error": None,
+                "mode": "multiprocessing_worker",
+                "worker_count": 1,
+                "active_workers": 1
+            }
+        else:
+            return {
+                "running": False,
+                "port": None,
+                "scheme": None,
+                "error": None,
+                "mode": "stopped",
+                "worker_count": 0,
+                "active_workers": 0
+            }
+
+def get_multiprocessing_stats() -> Dict[str, Any]:
+    """Get detailed multiprocessing statistics"""
+    # Check if we're in the main process
+    if multiprocessing.current_process().name != 'MainProcess':
+        return {
+            "error": "Not in main process",
+            "process_name": multiprocessing.current_process().name,
+            "multiprocessing_enabled": MULTIPROCESSING_ENABLED,
+            "multiprocessing_mode": MULTIPROCESSING_MODE,
+            "worker_processes": WORKER_PROCESSES,
+            "cpu_count": cpu_count()
+        }
+    
+    if not _worker_processes:
+        return {"error": "No multiprocessing workers configured"}
+    
+    stats = {
+        "total_workers": len(_worker_processes),
+        "active_workers": 0,
+        "worker_details": []
+    }
+    
+    for i, worker in enumerate(_worker_processes):
+        worker_info = {
+            "worker_id": i + 1,
+            "pid": worker.pid if hasattr(worker, 'pid') else None,
+            "alive": worker.is_alive(),
+            "exitcode": worker.exitcode if hasattr(worker, 'exitcode') else None
+        }
+        stats["worker_details"].append(worker_info)
+        
+        if worker.is_alive():
+            stats["active_workers"] += 1
+    
+    # Add configuration info
+    stats.update({
+        "multiprocessing_enabled": MULTIPROCESSING_ENABLED,
+        "multiprocessing_mode": MULTIPROCESSING_MODE,
+        "worker_processes": WORKER_PROCESSES,
+        "cpu_count": cpu_count()
+    })
+    
+    return stats
 
 
 async def main():
@@ -3320,5 +3764,6 @@ def create_proxy_session(proxy_config: dict) -> ClientSession:
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
