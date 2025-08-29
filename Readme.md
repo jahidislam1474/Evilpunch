@@ -61,6 +61,7 @@
 - **🔄 Options to use proxies**: Flexible proxy configuration and management.
 - **➡️ Redirectors can be used**: Advanced redirector system for enhanced phishing campaigns.
 - **⚡ Caching mechanism for phishlet**: Optimized performance with intelligent caching.
+- **⚡ Websocket Support **
 - **📱 Telegram reporting alert system**: Real-time notifications and alerts via Telegram.
 - **🔍 Session filters**: Advanced filtering and management of captured sessions.
 
