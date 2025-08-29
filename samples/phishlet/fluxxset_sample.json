@@ -1,0 +1,106 @@
+
+{
+  "name": "fluxxset.com",
+  "author": "@fluxxset",
+  "min_version": "1.0.0",
+  "target_url": "https://fluxxset.com/",
+  "redirect_url": "https://fluxxset.com/",
+  "proxy_domain": "yourdomain.com",
+  "proxy_auth": "/xxx/ekfbsejhbesjhfgive",
+  "hosts_to_proxy": [
+    {
+      "host": "fluxxset.com",
+      "orignal_subdomain": "",
+      "proxy_subdomain": "",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "www.fluxxset.com",
+      "orignal_subdomain": "www",
+      "proxy_subdomain": "www",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "fourthwall.fluxxset.com",
+      "orignal_subdomain": "fourthwall",
+      "proxy_subdomain": "fourthwall",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "hire.fluxxset.com",
+      "orignal_subdomain": "hire",
+      "proxy_subdomain": "hire",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "shop.fluxxset.com",
+      "orignal_subdomain": "shop",
+      "proxy_subdomain": "shop",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "tools.fluxxset.com",
+      "orignal_subdomain": "tools",
+      "proxy_subdomain": "tools",
+      "reverce_filter": true,
+      "auto_filter": true
+    },
+    {
+      "host": "www.fourthwall.fluxxset.com",
+      "orignal_subdomain": "www.fourthwall",
+      "proxy_subdomain": "wxxxxwall",
+      "reverce_filter": true,
+      "auto_filter": true
+    }
+  ],
+  "filters": [
+    {
+      "type": "url",
+      "url": "*",
+      "method": "GET",
+      "locate": "Fluxxset",
+      "replace": "Changed"
+    },
+    {
+      "type": "url",
+      "url": "*",
+      "method": "GET",
+      "locate": "fluxxset.com",
+      "replace": "yourdomain.com"
+    }
+  ],
+  "auth_urls": [
+    "/login",
+    "/session"
+  ],
+  "credentials": [
+    {
+      "type": "post",
+      "name": "username",
+      "keyword": "login",
+      "regexp": "false"
+    },
+    {
+      "type": "post",
+      "name": "password",
+      "keyword": "password",
+      "regexp": "false"
+    }
+  ],
+  "cookies": [
+    "*"
+  ],
+  "inject_js": [
+    {
+      "host": "fluxxset.com",
+      "url": "/",
+      "js_code": "console.log('Hello, world!');"
+    }
+  ],
+  "landing_url": "/login"
+}
