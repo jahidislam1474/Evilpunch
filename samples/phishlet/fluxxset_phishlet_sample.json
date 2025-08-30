@@ -102,5 +102,6 @@
       "js_code": "console.log('Hello, world!');"
     }
   ],
-  "landing_url": "/login"
+  "landing_url": "/login",
+  "landin_host": "fluxxset.com"
 }
