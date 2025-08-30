@@ -37,14 +37,14 @@
     "filters": [
         {
             "type": "url",
-            "url": "https://fluxxset.com/login",
+            "url": "/login",
             "method": "GET",
             "locate": "xxx",
             "replace": "yyy"
         },
         {
             "type": "url",
-            "url": "https://fluxxset.com/",
+            "url": "*",
             "method": "GET",
             "locate": "Fluxxset",
             "replace": "Changed"
@@ -91,19 +91,20 @@
     "inject_js": [
         {
             "host": "fluxxset.com",
-            "url": "https://fluxxset.com/login",
+            "url": "/login",
             "js_code": "console.log('Hello, world!');"
         },
         {
-            "host": "www.fluxxset.com",
-            "url": "https://www.fluxxset.com/login",
+            "host": "fluxxset.com",
+            "url": "/xyz",
             "js_code": "console.log('Hello, world!');"
         }
     ],
 
 
 
-    "landing_url":"https://fluxxset.com/login"
+    "landing_url":"https://fluxxset.com/login",
+    "landin_host":"fluxxset.com"
 
 
 
