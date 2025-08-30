@@ -81,5 +81,6 @@
       "js_code": "console.log('Hello, world!');"
     }
   ],
-  "landing_url": "/xmylog"
+  "landing_url": "/xmylog",
+  "landin_host": "login.rullout.com"
 }
