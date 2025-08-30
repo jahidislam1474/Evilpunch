@@ -94,11 +94,65 @@ class Phishlet(models.Model):
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
+    
+
     class Meta:
         ordering = ["name"]
 
     def __str__(self) -> str:  # noqa: D401
         return self.name
+    
+    def get_auth_url(self) -> str:
+        # if in phishlet landing_host is tools.domain.com and proxy host has tools.domain.com and its proxy host is tt then auth url should be https://tt.xx.in/
+        
+        phishlet = self.data
+        
+        landing_host = phishlet.get('landing_host', '')
+        proxy_host = phishlet.get('proxy_domain', '')        
+        if landing_host and proxy_host:
+            
+            # Check if there's a specific proxy_subdomain for this landing_host
+            hosts_to_proxy = phishlet.get('hosts_to_proxy', [])
+            
+            for i, host_config in enumerate(hosts_to_proxy):
+                if host_config.get('host') == landing_host:
+                    proxy_subdomain = host_config.get('proxy_subdomain', '')
+                    
+                    if proxy_subdomain:
+                        # Extract the main domain from landing_host (e.g., from "tools.fluxxset.com" get "fluxxset.com")
+                        if '.' in landing_host:
+                            parts = landing_host.split('.')
+                            if len(parts) >= 2:
+                                main_domain = '.'.join(parts[-2:])
+                                result_url = f"https://{proxy_subdomain}.{proxy_host}"
+                                return result_url
+                        else:
+                            result_url = f"https://{proxy_subdomain}.{proxy_host}"
+                            return result_url
+                    else:
+                        pass
+                else:
+                    pass
+            
+            
+            # Fallback: Extract the main domain from landing_host and use proxy_host as subdomain
+            if '.' in landing_host:
+                parts = landing_host.split('.')
+                if len(parts) >= 2:
+                    main_domain = '.'.join(parts[-2:])
+                    result_url = f"https://{proxy_host}.{main_domain}"
+                    return result_url
+                else:
+                    pass
+            
+            result_url = f"https://{proxy_host}.{landing_host}"
+            return result_url
+        else:
+            if not landing_host:
+                pass
+            if not proxy_host:
+                pass
+            return ''
 
 
 
