@@ -8,8 +8,8 @@
     "dns_port": 5300,
     "public_ip": "127.0.0.1",
 
-    "dashboard_port": 9000,
-    "dashboard_host": "0.0.0.0",
+    "dashboard_port": 8443,
+    "dashboard_host": "146.190.166.28",
     "dashboard_username": "admin",
     "dashboard_password": "admin",
 

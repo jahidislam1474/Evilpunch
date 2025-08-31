@@ -142,6 +142,11 @@
                 </button>
                 <a href="{% url 'phishlet_edit' p.pk %}" class="btn btn-sm btn-outline-light">Edit</a>
               </div>
+              <button class="btn btn-sm btn-outline-danger ms-2 delete-phishlet-btn" 
+              data-phishlet-id="{{ p.id }}"
+              title="Delete phishlet">
+                Delete Phishlet
+              </button>
               <a href="{% url 'phishlet_download' p.pk %}" class="btn btn-sm btn-secondary ms-2">Download</a>
               <button class="btn btn-sm btn-outline-warning ms-2 get-local-hosts-btn" 
                       data-phishlet-id="{{ p.id }}"
@@ -523,7 +528,41 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   });
+
+  // Delete phishlet
+
+  document.querySelectorAll('.delete-phishlet-btn').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    Swal.fire({
+      title: "Are you sure?",
+      text: "Do you want to delete this phishlets!",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#3085d6",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Yes, delete it!"
+    }).then(async (result) => {
+      if (result.isConfirmed) {
+        const tr = e.target.closest('tr');
+        const id = tr.dataset.id;
+
+        const res = await fetch(`/phishlets/${id}/delete/`, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrfToken },
+        });
+
+        const data = await res.json();
+        if (data.ok) {
+          Swal.fire("Deleted!", "Phishlet has been deleted.", "success")
+            .then(() => window.location.reload());
+        }
+      }
+    });
+  });
 });
+
+});
+
 </script>
 {% endblock %}
 
