@@ -63,9 +63,9 @@
                   {% if proxy_domain %}
                     <div class="d-flex align-items-center">
 
-                      <code class="text-info me-2">https://{{ proxy_domain }}{{ p.proxy_auth }}</code>
+                      <code class="text-info me-2">{{p.get_auth_url}}{{ p.proxy_auth }}</code>
                       <button class="btn btn-sm btn-outline-info copy-btn" 
-                              data-url="https://{{ proxy_domain }}{{ p.proxy_auth }}"
+                              data-url="{{p.get_auth_url}}{{ p.proxy_auth }}"
                               title="Copy URL">
                         <i class="fa fa-clipboard"></i>
                       </button>
