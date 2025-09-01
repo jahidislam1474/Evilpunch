@@ -17,6 +17,7 @@ urlpatterns = [
     path('phishlets/<uuid:pk>/clear-cache/', views.phishlet_clear_cache_view, name='phishlet_clear_cache'),
     path('phishlets/<uuid:pk>/local-hosts/', views.phishlet_get_local_hosts_view, name='phishlet_get_local_hosts'),
     path('phishlets/<uuid:pk>/delete/', views.phishlet_delete_view, name='phishlet_delete'),
+    path('domain/<uuid:pk>/delete/', views.domain_delete_view, name='domain_delete'),
 
     # Redirector management
     path('redirectors/', views.redirector_list_view, name='redirector_list'),
