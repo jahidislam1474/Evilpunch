@@ -185,6 +185,39 @@ def phishlet_toggle_view(request: HttpRequest, pk: uuid.UUID) -> JsonResponse:
     instance.save(update_fields=["is_active", "updated_at"])
     return JsonResponse({"ok": True, "is_active": instance.is_active})
 
+@login_required
+@user_passes_test(is_admin)
+def phishlet_delete_view(request, pk):
+    if request.method == "POST":
+        try:
+            obj = Phishlet.objects.get(pk=pk)
+            obj.delete()
+            return JsonResponse({"ok": True, "message": "Phishlet deleted successfully."})
+        except Phishlet.DoesNotExist:
+            return JsonResponse({"ok": False, "message": "Phishlet not found."}, status=404)
+        except Exception as e:
+            return JsonResponse({"ok": False, "message": str(e)}, status=500)
+
+    return JsonResponse({"ok": False, "message": "Method not allowed."}, status=405)
+
+
+@login_required
+
+@login_required
+@user_passes_test(is_admin)
+def domain_delete_view(request, pk):
+    if request.method == "POST":
+        try:
+            obj = ProxyDomain.objects.get(pk=pk)
+            obj.delete()
+            return JsonResponse({"ok": True, "message": "Domain deleted successfully."})
+        except ProxyDomain.DoesNotExist:
+            return JsonResponse({"ok": False, "message": "Domain not found."}, status=404)
+        except Exception as e:
+            return JsonResponse({"ok": False, "message": str(e)}, status=500)
+
+    return JsonResponse({"ok": False, "message": "Method not allowed."}, status=405)
+
 
 @login_required
 @user_passes_test(is_admin)
