@@ -320,7 +320,8 @@ function viewSessionDetails(sessionId) {
                         <div class="col-md-6">
                             <h6>Captured Cookies</h6>
                             <div class="mb-2">
-                                <button class="btn btn-sm btn-success" onclick="copyAllCookies()" title="Copy all cookies">
+                                <button class="btn btn-sm btn-success"   data-cookies='${JSON.stringify(session.captured_cookies)}'
+        onclick="copyAllCookies(this.dataset.cookies)" title="Copy all cookies">
                                     <i class="fas fa-copy"></i> Copy All Cookies
                                 </button>
                             </div>
@@ -337,7 +338,8 @@ function viewSessionDetails(sessionId) {
                         <div class="col-12">
                             <h6>All Cookies (JSON Format) - Full Width</h6>
                             <div class="position-relative">
-                                <button class="btn btn-sm btn-outline-secondary position-absolute top-0 end-0 m-2" onclick="copyAllCookies()" title="Copy all cookies">
+                                <button class="btn btn-sm btn-outline-secondary position-absolute top-0 end-0 m-2"   data-cookies='${JSON.stringify(session.captured_cookies)}'
+        onclick="copyAllCookies(this.dataset.cookies)" title="Copy all cookies">
                                     <i class="fas fa-copy"></i>
                                 </button>
                                 <pre class="bg-dark text-light p-3 rounded w-100" style="max-height: 400px; overflow-y: auto; font-size: 12px; border: 1px solid #495057;"><code>${JSON.stringify(session.captured_cookies, null, 2)}</code></pre>
@@ -424,49 +426,17 @@ function deleteSession(sessionId) {
     }
 }
 
-function copyAllCookies() {
-    // Get the current session data from the modal
-    const modalBody = document.getElementById('sessionModalBody');
-    if (!modalBody) {
-        showToast('No session data available', 'error');
-        return;
-    }
-    
-    // Extract cookies from the current session display
-    let cookieText = '';
-    const cookieElements = modalBody.querySelectorAll('.border.rounded');
-    
-    if (cookieElements.length > 0) {
-        cookieElements.forEach(element => {
-            const nameElement = element.querySelector('strong');
-            const valueElement = element.querySelector('code');
-            if (nameElement && valueElement) {
-                const name = nameElement.textContent.replace(':', '');
-                const value = valueElement.textContent;
-                cookieText += `${name}=${value}\n`;
-            }
-        });
-    }
-    
-    if (cookieText.trim()) {
-        // Copy to clipboard
-        const textarea = document.createElement('textarea');
-        textarea.value = cookieText.trim();
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        
-        showToast('All cookies copied to clipboard!', 'success');
-    } else {
-        showToast('No cookies to copy', 'warning');
-    }
+// new copy
+async function copyAllCookies(input) {
+  try {
+    // Copy to clipboard
+    await navigator.clipboard.writeText(input);
+    showToast("Cookies copied!", "success");
+  } catch (e) {
+    console.error(e);
+    showToast("Invalid cookies data", "error");
+  }
 }
-
-// Auto-submit form when filters change
 document.addEventListener('DOMContentLoaded', function() {
     const filterSelects = document.querySelectorAll('select[name]');
     filterSelects.forEach(select => {

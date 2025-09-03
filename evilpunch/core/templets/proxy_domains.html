@@ -42,6 +42,7 @@
                 <button class="btn btn-sm btn-outline-light" data-bs-toggle="modal" data-bs-target="#modalCert" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Add Certs</button>
                 <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalGenerateSSL" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Generate SSL</button>
                 <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#modalLetsEncrypt" data-id="{{ d.id }}" data-host="{{ d.hostname }}">Let's Encrypt SSL</button>
+                <button class="btn btn-sm btn-outline-danger delete-domain-btn" data-id="{{ d.id }}" >Delete Domain</button>
                 <a class="btn btn-sm btn-outline-light" href="{% url 'proxy_domain_cert_get' d.id %}">Download Certs</a>
               </div>
             </td>
@@ -264,6 +265,39 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // delete domain
+
+  document.querySelectorAll('.delete-domain-btn').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    Swal.fire({
+      title: "Are you sure?",
+      text: "Do you want to delete this domain!",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#3085d6",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Yes, delete it!"
+    }).then(async (result) => {
+      if (result.isConfirmed) {
+        const tr = e.target.closest('tr');
+        const id = tr.dataset.id;
+
+        const res = await fetch(`/domain/${id}/delete/`, {
+          method: 'POST',
+          headers: { 'X-CSRFToken': csrfToken },
+        });
+
+        const data = await res.json();
+        if (data.ok) {
+          Swal.fire("Deleted!", "Domain has been deleted.", "success")
+            .then(() => window.location.reload());
+        }
+      }
+    });
+  });
+});
+
+  
   // Prepare cert modal
   const modalEl = document.getElementById('modalCert');
   modalEl.addEventListener('show.bs.modal', async (ev) => {
