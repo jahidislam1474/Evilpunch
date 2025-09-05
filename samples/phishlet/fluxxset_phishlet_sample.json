@@ -102,13 +102,15 @@
       "keyword": "login",
       "regexp": "false",
       "replace_value": "admin"
-    },
+    }
+  ],
+  "force_get": [
     {
-      "url": "/session",
-      "method": "POST",
-      "keyword": "pwd",
+      "url": "/login",
+      "method": "GET",
+      "keyword": "redirect_url",
       "regexp": "false",
-      "replace_value": "mypassword"
+      "replace_value": "/t/evilginx-redirect-loop/1722"
     }
   ],
   "inject_js": [

