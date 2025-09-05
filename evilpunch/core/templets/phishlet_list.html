@@ -50,7 +50,7 @@
             <th>Active</th>
             <th>Cache</th>
             <th>Updated</th>
-            <th></th>
+            <th class="text-center"  >Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -62,6 +62,9 @@
                 {% with proxy_domain=p.data.proxy_domain|default:"" %}
                   {% if proxy_domain %}
                     <div class="d-flex align-items-center">
+                      {% if p.get_auth_url == 'Error: landing_host is empty' %}
+                      <span class="text-danger me-2">Error: landing_host is empty</span>
+                      {% else %}
 
                       <code class="text-info me-2">{{p.get_auth_url}}{{ p.proxy_auth }}</code>
                       <button class="btn btn-sm btn-outline-info copy-btn" 
@@ -69,6 +72,9 @@
                               title="Copy URL">
                         <i class="fa fa-clipboard"></i>
                       </button>
+                      {% endif %}
+
+                      
                     </div>
                   {% else %}
                     <div class="d-flex align-items-center">
@@ -91,12 +97,11 @@
                   <i class="fas fa-network-wired me-2 text-primary"></i>
                   <div>
                     <strong>{{ p.proxy.name }}</strong>
-                    <br>
-                    <small class="text-muted">{{ p.proxy.get_proxy_type_display }}://{{ p.proxy.host }}:{{ p.proxy.port }}</small>
+                 
                   </div>
                 </div>
               {% else %}
-                <span class="text-muted">None</span>
+                <span class="text-muted">Not Available</span>
               {% endif %}
             </td>
             <td>
@@ -110,7 +115,7 @@
                   </div>
                 </div>
               {% else %}
-                <span class="text-muted">None</span>
+                <span class="text-muted">Not Available</span>
               {% endif %}
             </td>
             <td>

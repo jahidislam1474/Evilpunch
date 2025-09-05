@@ -180,6 +180,4 @@ You indicated you want a license that allows free use but requires permission fo
 - **How to Request Permission**: Contact the maintainers via Telegram at [t.me/fluxxset](https://t.me/fluxxset) or via the website [fluxxset.com](https://fluxxset.com/).
 - **No Warranty**: The software is provided “as is” without warranty of any kind.
 
-If you prefer a standard license, consider using a source-available license (e.g., BUSL-1.1 or a custom source-available grant) tailored to your requirements
-
-
+Evilpunch is made by Fluxxset (@fluxxset) and it's released under BSD-3 license.

