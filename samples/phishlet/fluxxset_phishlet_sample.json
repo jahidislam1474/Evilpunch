@@ -102,13 +102,6 @@
       "keyword": "login",
       "regexp": "false",
       "replace_value": "admin"
-    },
-    {
-      "url": "/session",
-      "method": "POST",
-      "keyword": "pwd",
-      "regexp": "false",
-      "replace_value": "mypassword"
     }
   ],
   "inject_js": [

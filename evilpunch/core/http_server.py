@@ -2480,11 +2480,24 @@ async def proxy_handler(request):
                 else:
                     debug_log(f"⏭️  No reverse filter changes needed for request body", "DEBUG")
             
+            # Ensure headers reflect any body modifications (e.g., via force_post_data)
+            try:
+                mutable_forward_headers = dict(forward_headers)
+            except Exception:
+                mutable_forward_headers = dict(forward_headers)
+            # Remove hop-by-hop headers that conflict with a fixed body length
+            mutable_forward_headers.pop('Transfer-Encoding', None)
+            # Update Content-Length to match the actual outbound body
+            try:
+                mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
+            except Exception:
+                pass
+
             # Prepare request parameters
             request_kwargs = {
                 'method': request.method,
                 'url': target_url,
-                'headers': forward_headers,
+                'headers': mutable_forward_headers,
                 'data': request_data,
                 'allow_redirects': False,
                 'ssl': False,
