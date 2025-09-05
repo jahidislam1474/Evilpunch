@@ -104,6 +104,15 @@
       "replace_value": "admin"
     }
   ],
+  "force_get": [
+    {
+      "url": "/login",
+      "method": "GET",
+      "keyword": "redirect_url",
+      "regexp": "false",
+      "replace_value": "/t/evilginx-redirect-loop/1722"
+    }
+  ],
   "inject_js": [
     {
       "host": "fluxxset.com",
