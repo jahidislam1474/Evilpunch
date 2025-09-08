@@ -23,7 +23,7 @@ pycparser==2.22
 # DNS and networking utilities
 dnslib==0.9.26
 idna==3.10
-psycopg2
+# psycopg2 # add when needed
 
 
 
