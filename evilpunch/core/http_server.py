@@ -2187,6 +2187,7 @@ async def multiprocessing_stats_handler(request):
         return web.json_response({"error": str(e)}, status=500)
 
 async def proxy_handler(request):
+    debug_log("-----------🐚🐚🐚🐚🐚 request started 🐚🐚🐚🐚🐚--------", "INFO")
     debug_log("=== PROXY REQUEST HANDLER ===", "DEBUG")
     debug_log(f"Request method: {request.method}", "DEBUG")
     # Limit URL logging to first 20 characters to reduce noise
@@ -2600,6 +2601,7 @@ async def proxy_handler(request):
                 debug_log("No proxy configuration available for this request", "DEBUG")
             
             async with session.request(**request_kwargs) as resp:
+                debug_log("---------🍄🍄🍄🍄🍄🍄 responce started 🍄🍄🍄🍄🍄🍄------", "INFO")
                 debug_log(f"Upstream response status: {resp.status}", "INFO")
                 if proxy_config:
                     debug_log(f"✅ Request completed through proxy: {proxy_config['url']}", "INFO")
@@ -3085,8 +3087,8 @@ async def proxy_handler(request):
                         combined = tail_text + text
                         
                         # Check if tools.fluxxset.com exists in this chunk before replacement
-                        if 'tools.fluxxset.com' in combined:
-                            debug_log(f"🔍 Found 'tools.fluxxset.com' in chunk {chunk_count} - will attempt replacement", "DEBUG")
+                        # if 'tools.fluxxset.com' in combined:
+                        #     debug_log(f"🔍 Found 'tools.fluxxset.com' in chunk {chunk_count} - will attempt replacement", "DEBUG")
                         
                         if ordered_replacements:
                             # Check if content type supports replacements
@@ -3324,9 +3326,11 @@ async def proxy_handler(request):
                             else:
                                 debug_log(f"EOF write error: {eof_error}", "ERROR")
                     
+                    debug_log("-------🥖🥖🥖🥖🥖 responce end 🥖🥖🥖🥖🥖-----------", "INFO")
                     return stream_response
-                
+
     except Exception as e:
+        debug_log("----------🥖🥖🥖🥖🥖 request end 🥖🥖🥖🥖🥖------------", "INFO")
         debug_log(f"Proxy Error: {e}", "ERROR")
         debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
         
