@@ -64,7 +64,7 @@ def create_ssl_context():
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     
     # SSL certificates directory
-    ssl_dir = '/Users/abhijeetyadav/Documents/EvilPunch/Evilpunch/server_ssl'
+    ssl_dir = '/root/server_ssl'
     
     # Try to load existing certificates from server_ssl directory
     # Check for common certificate file extensions
@@ -164,7 +164,7 @@ def main():
     host = os.environ.get('HOST', '0.0.0.0')
     
     print(f"Starting Flask app with SSL support...")
-    print(f"SSL certificates directory: /Users/abhijeetyadav/Documents/EvilPunch/Evilpunch/server_ssl")
+    print(f"SSL certificates directory: /root/server_ssl")
     print(f"Server will be available at: https://{host}:{port}")
     print(f"Health check: https://{host}:{port}/health")
     print(f"Echo endpoint: https://{host}:{port}/")
