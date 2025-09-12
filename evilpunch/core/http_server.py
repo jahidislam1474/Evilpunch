@@ -2901,25 +2901,8 @@ async def proxy_handler(request):
                     
                     debug_log("=== END REQUEST SETUP ===", "DEBUG")
                     
-                    # Apply additional header replacements based on ordered_replacements
-                    if ordered_replacements:
-                        debug_log(f"  Applying ordered replacements to patched headers: --------\n --------------------------------")
-                        for key, value in patched_headers.items():
-                            # Check if any target from ordered_replacements exists in the header value
-                            new_value = value
-                            for target, proxy in ordered_replacements:
-                                if target in new_value:
-                                    new_value = new_value.replace(target, proxy)
-                                    debug_log(f"  Replaced in patched header {key}: {target} -> {proxy}", "DEBUG")
-                            
-                            # Update the patched header if any replacements were made
-                            if new_value != value:
-                                patched_headers[key] = new_value
-                                debug_log(f"  Final patched header {key}: {value} -> {new_value}", "DEBUG")
-                        debug_log(f"  Applied ordered replacements to patched headers: --------\n --------------------------------")
-                    debug_log(f"  Final patched headers: --------\n --------------------------------")
-                    debug_log(f"  {patched_headers}", "DEBUG")
-                    debug_log(f"  --------------------------------")
+                    # Apply additional header replacements based on ordered_replacements using helper function
+                    patched_headers = patch_response_header_2(patched_headers, ordered_replacements, debug_log)
                     
                     # Create the stream response with the fully patched headers
                     stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)

