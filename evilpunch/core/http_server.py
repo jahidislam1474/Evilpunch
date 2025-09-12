@@ -2872,34 +2872,8 @@ async def proxy_handler(request):
                         filtered_map = {target_host: incoming_host}
                         debug_log(f"Using fallback mapping: {target_host} -> {incoming_host}", "DEBUG")
                     
-                    # Prepare ordered replacements: ALL sorted by descending target length to ensure specific subdomains are replaced before base domains
-                    ordered_replacements = []  # List[Tuple[str, str]]
-                    
-                    # Add ALL mappings (including target_host) to be sorted by length
-                    all_mappings = [(t, p) for t, p in filtered_map.items()]
-                    # Sort by length in descending order so longer hostnames (like tools.fluxxset.com) are processed before shorter ones (like fluxxset.com)
-                    all_mappings.sort(key=lambda kv: len(kv[0]), reverse=True)
-                    
-                    for tgt, prox in all_mappings:
-                        ordered_replacements.append((tgt, prox))
-                        if tgt == target_host:
-                            debug_log(f"  Primary replacement: {target_host} -> {prox}", "DEBUG")
-                        else:
-                            debug_log(f"  Secondary replacement: {tgt} -> {prox}", "DEBUG")
-                    
-                    
-                    # Debug: Verify the replacement order is correct
-                    debug_log(f"Final replacement order (longest first): {[(t, p) for t, p in ordered_replacements]}", "DEBUG")
-                    
-                    # Add specific debug for tools.fluxxset.com replacement
-                    debug_log(f"Looking for 'tools.fluxxset.com' in response content...", "DEBUG")
-                    
-                    # Verify the specific replacement we want is in the list
-                    tools_replacement = next((item for item in ordered_replacements if 'tools.fluxxset.com' in item[0]), None)
-                    if tools_replacement:
-                        debug_log(f"✓ Found tools.fluxxset.com replacement: {tools_replacement[0]} -> {tools_replacement[1]}", "INFO")
-                    else:
-                        debug_log(f"⚠️  WARNING: tools.fluxxset.com replacement NOT FOUND in ordered_replacements!", "WARN")
+                    # Create ordered replacements using helper function
+                    ordered_replacements = create_ordered_replacements(filtered_map, target_host, debug_log)
                     
                     debug_log("=== END REQUEST SETUP ===", "DEBUG")
                     

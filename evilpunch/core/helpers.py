@@ -495,7 +495,44 @@ def patch_response_header_2(patched_headers, ordered_replacements, debug_log=Non
     if debug_log:
         debug_log(f"  Applied ordered replacements to patched headers: --------\n --------------------------------")
         debug_log(f"  Final patched headers: --------\n --------------------------------")
-        debug_log(f"  {patched_headers}", "DEBUG")
+        # debug_log(f"  {patched_headers}", "DEBUG")
         debug_log(f"  --------------------------------")
     
     return patched_headers
+
+
+def create_ordered_replacements(filtered_map, target_host, debug_log=None):
+    """
+    Create ordered replacements list sorted by target length (longest first).
+    
+    Args:
+        filtered_map: Dictionary of target -> proxy mappings
+        target_host: The primary target host for special logging
+        debug_log: Optional debug logging function
+    
+    Returns:
+        list: List of tuples (target, proxy) sorted by target length (longest first)
+    """
+    # Prepare ordered replacements: ALL sorted by descending target length to ensure specific subdomains are replaced before base domains
+    ordered_replacements = []  # List[Tuple[str, str]]
+    
+    # Add ALL mappings (including target_host) to be sorted by length
+    all_mappings = [(t, p) for t, p in filtered_map.items()]
+    # Sort by length in descending order so longer hostnames (like tools.fluxxset.com) are processed before shorter ones (like fluxxset.com)
+    all_mappings.sort(key=lambda kv: len(kv[0]), reverse=True)
+    
+    for tgt, prox in all_mappings:
+        ordered_replacements.append((tgt, prox))
+        if debug_log:
+            if tgt == target_host:
+                debug_log(f"  Primary replacement: {target_host} -> {prox}", "DEBUG")
+            else:
+                debug_log(f"  Secondary replacement: {tgt} -> {prox}", "DEBUG")
+    
+    # if debug_log:
+    #     # Debug: Verify the replacement order is correct
+    #     debug_log(f"Final replacement order (longest first): {[(t, p) for t, p in ordered_replacements]}", "DEBUG")
+        
+      
+        
+    return ordered_replacements
