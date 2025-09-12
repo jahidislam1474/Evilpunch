@@ -69,6 +69,7 @@
 ## Run the Dashboard
 
 ### 🚀 Quick start (one command)
+#### prefered OS Ubuntu 22.04 or any LTS version of the Ubuntu
 
 ```bash
 chmod +x run.sh && ./run.sh -d # for devloper mode
