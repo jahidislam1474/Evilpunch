@@ -536,3 +536,186 @@ def create_ordered_replacements(filtered_map, target_host, debug_log=None):
       
         
     return ordered_replacements
+
+
+def apply_content_replacements(combined, ordered_replacements, should_apply_replacements, content_type, 
+                             incoming_host, request, chunk_count, debug_log=None):
+    """
+    Apply all content replacements including regex-based replacements, hardcoded mappings, 
+    and JavaScript injection for HTML content.
+    
+    Args:
+        combined: The content string to apply replacements to
+        ordered_replacements: List of tuples (target, proxy) for replacements
+        should_apply_replacements: Boolean indicating if replacements should be applied
+        content_type: The content type of the response
+        incoming_host: The incoming host for hardcoded mappings
+        request: The request object for JavaScript injection tracking
+        chunk_count: The current chunk number for logging
+        debug_log: Optional debug logging function
+    
+    Returns:
+        tuple: (modified_content, request_updated) where request_updated may have new tracking flags
+    """
+    if not ordered_replacements or not should_apply_replacements:
+        if debug_log:
+            debug_log(f"⏭️  Skipping replacements for non-text content type: {content_type}", "DEBUG")
+        return combined, request
+    
+    import re
+    
+    # Step 1: Create a mapping of all replacements to apply
+    replacement_map = {}
+    for tgt, prox in ordered_replacements:
+        if tgt and prox and tgt in combined:
+            replacement_map[tgt] = prox
+    
+    # Step 2: Apply all replacements using regex to avoid interference
+    if replacement_map:
+        # Sort by length (longest first) to ensure specific subdomains are processed first
+        sorted_replacements = sorted(replacement_map.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        if debug_log:
+            debug_log(f"🔄 Applying {len(sorted_replacements)} replacements using regex for chunk {chunk_count}", "DEBUG")
+        
+        # Create a single regex pattern that matches all targets
+        pattern_parts = []
+        replacement_dict = {}
+        
+        for tgt, prox in sorted_replacements:
+            # Escape special regex characters and add word boundaries
+            escaped_target = re.escape(tgt)
+            pattern_parts.append(escaped_target)
+            replacement_dict[tgt] = prox
+        
+        # Create a single regex pattern
+        if pattern_parts:
+            pattern = '|'.join(pattern_parts)
+            regex = re.compile(pattern)
+            
+            # Apply all replacements in a single operation
+            old_combined = combined
+            
+            def replacement_function(match):
+                matched_text = match.group(0)
+                if matched_text in replacement_dict:
+                    replacement = replacement_dict[matched_text]
+                    if debug_log:
+                        debug_log(f"✓ Regex replaced '{matched_text}' with '{replacement}' in chunk {chunk_count}", "INFO")
+                        # Special tracking for tools.fluxxset.com replacement
+                        if 'tools.fluxxset.com' in matched_text:
+                            debug_log(f"🎯 SUCCESS: tools.fluxxset.com -> {replacement} replacement completed!", "INFO")
+                    return replacement
+                return matched_text
+            
+            combined = regex.sub(replacement_function, combined)
+            
+            # Debug: show final result
+            if old_combined != combined:
+                if debug_log:
+                    debug_log(f"🔄 Regex replacements completed for chunk {chunk_count}", "DEBUG")
+            else:
+                if debug_log:
+                    debug_log(f"⚠️  No replacements were made in chunk {chunk_count}", "DEBUG")
+    
+    # STEP 3: Apply hardcoded mappings AFTER all regex replacements are done
+    # These are final cleanup replacements that should happen at the very end
+    if should_apply_replacements:
+        hardcoded_replacements = {}
+        
+        # Add hardcoded mappings for specific subdomain replacements (if applicable)
+        if incoming_host == "xx.in":
+            hardcoded_replacements["login.fluxxset.com"] = "login1.xx.in"
+            if debug_log:
+                debug_log(f"Added hardcoded mapping for final pass: login.fluxxset.com -> login1.xx.in", "DEBUG")
+        
+        # Apply hardcoded replacements if any exist
+        if hardcoded_replacements:
+            if debug_log:
+                debug_log(f"🔄 Applying {len(hardcoded_replacements)} hardcoded replacements after regex", "DEBUG")
+            old_combined = combined
+            
+            for tgt, prox in hardcoded_replacements.items():
+                if tgt in combined:
+                    combined = combined.replace(tgt, prox)
+                    if debug_log:
+                        debug_log(f"✓ Final hardcoded replacement: '{tgt}' -> '{prox}' in chunk {chunk_count}", "INFO")
+            
+            if old_combined != combined:
+                if debug_log:
+                    debug_log(f"🔄 Hardcoded replacements completed for chunk {chunk_count}", "DEBUG")
+            else:
+                if debug_log:
+                    debug_log(f"⚠️  No hardcoded replacements were made in chunk {chunk_count}", "DEBUG")
+    else:
+        if debug_log:
+            debug_log(f"⏭️  Skipping hardcoded replacements for non-text content type: {content_type}", "DEBUG")
+    
+    # STEP 4: JavaScript injection for HTML content
+    # Only inject JavaScript for HTML content types and when we have script endpoints
+    if (should_apply_replacements and 
+        'text/html' in content_type and 
+        request.get('js_script_endpoints')):
+        
+        script_endpoints = request.get('js_script_endpoints', [])
+        if script_endpoints:
+            if debug_log:
+                debug_log(f"🔄 Applying JavaScript injection for {len(script_endpoints)} scripts in chunk {chunk_count}", "DEBUG")
+            
+            # For streaming HTML, we need to inject script tags strategically
+            # Check if this chunk contains closing head tag
+            if '</head>' in combined:
+                if debug_log:
+                    debug_log(f"🎯 Found </head> tag in chunk {chunk_count}, injecting scripts", "INFO")
+                
+                # Inject script tags before </head>
+                script_tags = []
+                for endpoint in script_endpoints:
+                    script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                
+                script_html = '\n    '.join(script_tags)
+                combined = combined.replace('</head>', f'    {script_html}\n</head>')
+                
+                if debug_log:
+                    debug_log(f"✓ Injected {len(script_endpoints)} script tags before </head>", "INFO")
+                
+                # Mark as injected to avoid duplicate injection
+                request['js_injection_completed'] = True
+            elif '</body>' in combined and not request.get('js_injection_completed'):
+                # Fallback: if no </head> tag but we have </body>, inject before it
+                if debug_log:
+                    debug_log(f"🎯 Found </body> tag in chunk {chunk_count}, injecting scripts (fallback)", "INFO")
+                
+                script_tags = []
+                for endpoint in script_endpoints:
+                    script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                
+                script_html = '\n    '.join(script_tags)
+                combined = combined.replace('</body>', f'    {script_html}\n</body>')
+                
+                if debug_log:
+                    debug_log(f"✓ Injected {len(script_endpoints)} script tags before </body> (fallback)", "INFO")
+                request['js_injection_completed'] = True
+            elif '</html>' in combined and not request.get('js_injection_completed'):
+                # Final fallback: if no </head> or </body> tag but we have </html>, inject before it
+                if debug_log:
+                    debug_log(f"🎯 Found </html> tag in chunk {chunk_count}, injecting scripts (final fallback)", "INFO")
+                
+                script_tags = []
+                for endpoint in script_endpoints:
+                    script_tags.append(f'<script src="/_temp_js/{endpoint}"></script>')
+                
+                script_html = '\n    '.join(script_tags)
+                combined = combined.replace('</html>', f'    {script_html}\n</html>')
+                
+                if debug_log:
+                    debug_log(f"✓ Injected {len(script_endpoints)} script tags before </html> (final fallback)", "INFO")
+                request['js_injection_completed'] = True
+            else:
+                if debug_log:
+                    debug_log(f"⏳ No closing tags found in chunk {chunk_count}, scripts will be injected later", "DEBUG")
+    else:
+        if debug_log:
+            debug_log(f"⏭️  Skipping JavaScript injection for non-HTML content type: {content_type}", "DEBUG")
+    
+    return combined, request
