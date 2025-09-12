@@ -507,6 +507,11 @@ def debug_log(message: str, level: str = "INFO"):
         print(f"{ANSI_GREEN}[{timestamp}] [{level}] {message}{ANSI_RESET}")
 
 
+async def remove_server_header(app, response):
+    """Remove the Server header from aiohttp responses for security"""
+    response.headers.pop('Server', None)
+
+
 _server_thread: Optional[threading.Thread] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _runner: Optional[web.AppRunner] = None
@@ -608,6 +613,9 @@ async def _run_worker_server(worker_id: int, port: int, ssl_context, stop_event)
     debug_log(f"Worker {worker_id}: Starting server on port {port}", "INFO")
     
     app = web.Application()
+    
+    # Remove Server header for security
+    app.on_response_prepare.append(remove_server_header)
     
     # Add routes for this worker
     app.router.add_route('GET', '/_cache/config', cache_config_handler)
@@ -2564,22 +2572,37 @@ async def proxy_handler(request):
                 mutable_forward_headers = dict(forward_headers)
             # Remove hop-by-hop headers that conflict with a fixed body length
             mutable_forward_headers.pop('Transfer-Encoding', None)
-            # Update Content-Length to match the actual outbound body
-            try:
-                mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
-            except Exception:
-                pass
+            
+            # Only set Content-Length for methods that typically have a body
+            if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
+                try:
+                    mutable_forward_headers['Content-Length'] = str(len(request_data) if request_data else 0)
+                except Exception:
+                    pass
+            else:
+                # Remove Content-Length for GET requests to avoid confusion
+                mutable_forward_headers.pop('Content-Length', None)
 
             # Prepare request parameters
             request_kwargs = {
                 'method': request.method,
                 'url': target_url,
                 'headers': mutable_forward_headers,
-                'data': request_data,
                 'allow_redirects': False,
                 'ssl': False,
                 'auto_decompress': True,
             }
+            
+            # Only add data parameter for methods that typically have a body
+            # This prevents aiohttp from automatically adding Content-Type: application/octet-stream
+            if request.method in ['POST', 'PUT', 'PATCH', 'DELETE'] and request_data:
+                request_kwargs['data'] = request_data
+            elif request_data and request.method == 'GET':
+                # For GET requests with data, we need to handle it differently
+                # Convert to query parameters or handle as needed
+                debug_log(f"GET request with data detected, data length: {len(request_data)}", "DEBUG")
+                # For now, we'll skip adding the data to avoid the Content-Type issue
+                # This might need to be handled differently based on your specific use case
             
             # Add proxy configuration if available
             if proxy_config and proxy_config['type'] in ['http', 'https']:
@@ -3296,6 +3319,9 @@ async def _start_multiprocessing_server(stop_event, port: int) -> None:
         # Start the main server (this will bind to the port)
         app = web.Application()
         
+        # Remove Server header for security
+        app.on_response_prepare.append(remove_server_header)
+        
         # Add routes for the main server
         app.router.add_route('GET', '/_cache/config', cache_config_handler)
         app.router.add_route('GET', '/_cache/stats', cache_stats_handler)
@@ -3426,6 +3452,9 @@ async def _start_single_threaded_server(stop_event: threading.Event, port: int) 
         port_to_use = FALLBACK_HTTP_PORT
 
     app = web.Application()
+    
+    # Remove Server header for security
+    app.on_response_prepare.append(remove_server_header)
     
     # Add route for cache statistics and management
     app.router.add_route('GET', '/_cache/config', cache_config_handler)
